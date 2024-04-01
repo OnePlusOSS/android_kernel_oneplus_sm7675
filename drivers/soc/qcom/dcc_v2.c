@@ -660,7 +660,7 @@ static bool is_dcc_enabled(struct dcc_drvdata *drvdata)
 	bool dcc_enable = false;
 	int list;
 
-	for (list = 0; list < DCC_MAX_LINK_LIST; list++) {
+	for (list = 0; list < drvdata->nr_link_list; list++) {
 		if (drvdata->enable[list]) {
 			dcc_enable = true;
 			break;
@@ -1894,8 +1894,7 @@ static int dcc_dt_parse(struct dcc_drvdata *drvdata, struct device_node *np)
 	}
 	drvdata->curr_list = curr_link_list;
 
-	if (of_property_read_bool(np, "qcom,ap-qad-override"))
-		drvdata->qad_output[drvdata->curr_list] = 1;
+	drvdata->qad_output[drvdata->curr_list] = 1;
 
 	drvdata->data_sink[curr_link_list] = DCC_DATA_SINK_SRAM;
 	ret = of_property_read_string(np, "qcom,data-sink",
@@ -1912,6 +1911,8 @@ static int dcc_dt_parse(struct dcc_drvdata *drvdata, struct device_node *np)
 			str_dcc_data_sink[drvdata->data_sink[curr_link_list]]);
 		}
 	}
+
+	drvdata->qad_output[drvdata->curr_list] = 1;
 
 	prop = of_get_property(np, "qcom,link-list", &len);
 	if (prop) {

@@ -312,6 +312,10 @@ void __migration_entry_wait(struct mm_struct *mm, pte_t *ptep,
 	if (!is_migration_entry(entry))
 		goto out;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+        CHP_BUG_ON(PageCont(pfn_swap_entry_to_page(entry)));
+#endif
+
 	migration_entry_wait_on_locked(entry, ptep, ptl);
 	return;
 out:
@@ -393,6 +397,7 @@ int folio_migrate_mapping(struct address_space *mapping,
 	int dirty;
 	int expected_count = folio_expected_refs(mapping, folio) + extra_count;
 	long nr = folio_nr_pages(folio);
+	long entries, i;
 
 	if (!mapping) {
 		/* Anonymous page without mapping */
@@ -430,8 +435,10 @@ int folio_migrate_mapping(struct address_space *mapping,
 			folio_set_swapcache(newfolio);
 			newfolio->private = folio_get_private(folio);
 		}
+		entries = nr;
 	} else {
 		VM_BUG_ON_FOLIO(folio_test_swapcache(folio), folio);
+		entries = 1;
 	}
 
 	/* Move dirty while page refs frozen and newpage not yet exposed */
@@ -441,7 +448,11 @@ int folio_migrate_mapping(struct address_space *mapping,
 		folio_set_dirty(newfolio);
 	}
 
-	xas_store(&xas, newfolio);
+	/* Swap cache still stores N entries instead of a high-order entry */
+	for (i = 0; i < entries; i++) {
+		xas_store(&xas, newfolio);
+		xas_next(&xas);
+	}
 
 	/*
 	 * Drop cache reference from old page by unfreezing
@@ -468,6 +479,7 @@ int folio_migrate_mapping(struct address_space *mapping,
 		struct mem_cgroup *memcg;
 
 		memcg = folio_memcg(folio);
+		/* FIXME: chp lruvec no care! */
 		old_lruvec = mem_cgroup_lruvec(memcg, oldzone->zone_pgdat);
 		new_lruvec = mem_cgroup_lruvec(memcg, newzone->zone_pgdat);
 
@@ -1039,6 +1051,10 @@ static int __unmap_and_move(struct folio *src, struct folio *dst,
 		folio_lock(src);
 	}
 
+        /* for debugging, detect the migration of subpages */
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+        CHP_BUG_ON(PageCont(folio_page(src, 0)));
+#endif
 	if (folio_test_writeback(src)) {
 		/*
 		 * Only in the case of a full synchronous migration is it

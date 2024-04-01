@@ -2,6 +2,7 @@
 /*
  * Copyright(C) 2016 Linaro Limited. All rights reserved.
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/atomic.h>
@@ -26,6 +27,7 @@ struct etr_flat_buf {
 	dma_addr_t	daddr;
 	void		*vaddr;
 	size_t		size;
+	struct sg_table	*sgt;
 };
 
 /*
@@ -47,7 +49,8 @@ struct etr_perf_buffer {
 };
 
 /* Convert the perf index to an offset within the ETR buffer */
-#define PERF_IDX2OFF(idx, buf)	((idx) % ((buf)->nr_pages << PAGE_SHIFT))
+#define PERF_IDX2OFF(idx, buf)		\
+		((idx) % ((unsigned long)(buf)->nr_pages << PAGE_SHIFT))
 
 /* Lower limit for ETR hardware buffer */
 #define TMC_ETR_PERF_MIN_BUF_SIZE	SZ_1M
@@ -302,6 +305,9 @@ static long tmc_sg_get_rwp_offset(struct tmc_drvdata *drvdata)
 long tmc_get_rwp_offset(struct tmc_drvdata *drvdata)
 {
 	struct etr_buf *etr_buf = drvdata->sysfs_buf;
+
+	if (etr_buf == NULL)
+		return -EINVAL;
 
 	if (etr_buf->mode == ETR_MODE_FLAT)
 		return tmc_flat_get_rwp_offset(drvdata);
@@ -659,11 +665,21 @@ static int tmc_etr_alloc_flat_buf(struct tmc_drvdata *drvdata,
 	if (!flat_buf)
 		return -ENOMEM;
 
-	flat_buf->vaddr = dma_alloc_noncoherent(real_dev, etr_buf->size,
-						&flat_buf->daddr,
-						DMA_FROM_DEVICE, GFP_KERNEL);
-	if (!flat_buf->vaddr) {
+	flat_buf->sgt = dma_alloc_noncontiguous(real_dev, etr_buf->size,
+						DMA_FROM_DEVICE, GFP_KERNEL, 0);
+	if (!flat_buf->sgt) {
 		kfree(flat_buf);
+		return -ENOMEM;
+	}
+
+	flat_buf->daddr = sg_dma_address(flat_buf->sgt->sgl);
+	flat_buf->vaddr = dma_vmap_noncontiguous(real_dev, etr_buf->size,
+						flat_buf->sgt);
+	if (!flat_buf->vaddr) {
+		dma_free_noncontiguous(real_dev, etr_buf->size,
+					flat_buf->sgt,
+					DMA_FROM_DEVICE);
+		flat_buf->sgt = NULL;
 		return -ENOMEM;
 	}
 
@@ -682,9 +698,12 @@ static void tmc_etr_free_flat_buf(struct etr_buf *etr_buf)
 	if (flat_buf && flat_buf->daddr) {
 		struct device *real_dev = flat_buf->dev->parent;
 
-		dma_free_noncoherent(real_dev, etr_buf->size,
-				     flat_buf->vaddr, flat_buf->daddr,
+		dma_vunmap_noncontiguous(real_dev, flat_buf->vaddr);
+		dma_free_noncontiguous(real_dev, etr_buf->size,
+				     flat_buf->sgt,
 				     DMA_FROM_DEVICE);
+		flat_buf->vaddr = NULL;
+		flat_buf->sgt = NULL;
 	}
 	kfree(flat_buf);
 }
@@ -693,6 +712,9 @@ static void tmc_etr_sync_flat_buf(struct etr_buf *etr_buf, u64 rrp, u64 rwp)
 {
 	struct etr_flat_buf *flat_buf = etr_buf->private;
 	struct device *real_dev = flat_buf->dev->parent;
+	s64 buf_len;
+	int i;
+	struct scatterlist *sg;
 
 	/*
 	 * Adjust the buffer to point to the beginning of the trace data
@@ -709,13 +731,19 @@ static void tmc_etr_sync_flat_buf(struct etr_buf *etr_buf, u64 rrp, u64 rwp)
 	 * the only reason why we would get a wrap around is when the buffer
 	 * is full.  Sync the entire buffer in one go for this case.
 	 */
+
 	if (etr_buf->offset + etr_buf->len > etr_buf->size)
-		dma_sync_single_for_cpu(real_dev, flat_buf->daddr,
-					etr_buf->size, DMA_FROM_DEVICE);
-	else
-		dma_sync_single_for_cpu(real_dev,
-					flat_buf->daddr + etr_buf->offset,
-					etr_buf->len, DMA_FROM_DEVICE);
+		dma_sync_sgtable_for_cpu(real_dev, flat_buf->sgt,
+					DMA_FROM_DEVICE);
+	else {
+		buf_len = etr_buf->len;
+		for_each_sg(flat_buf->sgt->sgl, sg, flat_buf->sgt->orig_nents, i) {
+			dma_sync_sg_for_cpu(real_dev, sg, 1, DMA_FROM_DEVICE);
+			buf_len -= sg->length;
+			if (buf_len <= 0)
+				break;
+		}
+	}
 }
 
 static ssize_t tmc_etr_get_data_flat_buf(struct etr_buf *etr_buf,
@@ -1008,7 +1036,7 @@ tmc_etr_buf_insert_barrier_packet(struct etr_buf *etr_buf, u64 offset)
 
 	len = tmc_etr_buf_get_data(etr_buf, offset,
 				   CORESIGHT_BARRIER_PKT_SIZE, &bufp);
-	if (WARN_ON(len < CORESIGHT_BARRIER_PKT_SIZE))
+	if (WARN_ON(len < 0 || len < CORESIGHT_BARRIER_PKT_SIZE))
 		return -EINVAL;
 	coresight_insert_barrier_packet(bufp);
 	return offset + CORESIGHT_BARRIER_PKT_SIZE;
@@ -1360,7 +1388,7 @@ alloc_etr_buf(struct tmc_drvdata *drvdata, struct perf_event *event,
 	 * than the size requested via sysfs.
 	 */
 	if ((nr_pages << PAGE_SHIFT) > drvdata->size) {
-		etr_buf = tmc_alloc_etr_buf(drvdata, (nr_pages << PAGE_SHIFT),
+		etr_buf = tmc_alloc_etr_buf(drvdata, ((ssize_t)nr_pages << PAGE_SHIFT),
 					    0, node, NULL);
 		if (!IS_ERR(etr_buf))
 			goto done;
@@ -1788,6 +1816,7 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 {
 	unsigned long flags;
 	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
+	u32 previous_mode;
 
 	spin_lock_irqsave(&drvdata->spinlock, flags);
 
@@ -1818,6 +1847,8 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 		tmc_usb_disable(drvdata->usb_data);
 		spin_lock_irqsave(&drvdata->spinlock, flags);
 	}
+	/* Presave mode to ensure if it's need to stop byte_cntr. */
+	previous_mode = drvdata->mode;
 	/* Dissociate from monitored process. */
 	drvdata->pid = -1;
 	drvdata->mode = CS_MODE_DISABLED;
@@ -1825,7 +1856,8 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 	drvdata->perf_buf = NULL;
 
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
-	tmc_etr_byte_cntr_stop(drvdata->byte_cntr);
+	if (previous_mode == CS_MODE_SYSFS)
+		tmc_etr_byte_cntr_stop(drvdata->byte_cntr);
 
 	dev_dbg(&csdev->dev, "TMC-ETR disabled\n");
 	return 0;
@@ -1835,11 +1867,25 @@ static int tmc_disable_etr_sink(struct coresight_device *csdev)
 {
 	struct tmc_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 	int ret;
+	uint32_t mode;
+	unsigned long flags;
 
-	mutex_lock(&drvdata->mem_lock);
-	ret = _tmc_disable_etr_sink(csdev, false);
-	mutex_unlock(&drvdata->mem_lock);
-	return ret;
+	spin_lock_irqsave(&drvdata->spinlock, flags);
+	mode = drvdata->mode;
+	spin_unlock_irqrestore(&drvdata->spinlock, flags);
+
+	switch (mode) {
+	/* mem_lock is used to support USB mode for protection */
+	case CS_MODE_SYSFS:
+		mutex_lock(&drvdata->mem_lock);
+		ret = _tmc_disable_etr_sink(csdev, false);
+		mutex_unlock(&drvdata->mem_lock);
+		return ret;
+	case CS_MODE_PERF:
+		return _tmc_disable_etr_sink(csdev, false);
+	}
+	/* We shouldn't be here */
+	return -EINVAL;
 }
 
 int tmc_etr_switch_mode(struct tmc_drvdata *drvdata, const char *out_mode)

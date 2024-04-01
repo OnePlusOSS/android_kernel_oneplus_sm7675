@@ -51,8 +51,13 @@
 		.intr_status_reg = base + 0xc + REG_SIZE * id,	\
 		.intr_target_reg = base + 0x8 + REG_SIZE * id,	\
 		.mux_bit = 2,			\
+		.dir_conn_reg = (base == EAST) ? base + EAST_PDC_OFFSET : \
+			((base == WEST) ? base + WEST_PDC_OFFSET : \
+			base + SOUTH_PDC_OFFSET),       \
 		.pull_bit = 0,			\
 		.drv_bit = 6,			\
+		.egpio_enable = 12,		\
+		.egpio_present = 11,		\
 		.oe_bit = 9,			\
 		.in_bit = 0,			\
 		.out_bit = 1,			\
@@ -64,6 +69,7 @@
 		.intr_polarity_bit = 1,		\
 		.intr_detection_bit = 2,	\
 		.intr_detection_width = 2,	\
+		.dir_conn_en_bit = 8,		        \
 	}
 
 #define SDC_QDSD_PINGROUP(pg_name, ctl, pull, drv)	\
@@ -543,6 +549,7 @@ enum sm6150_functions {
 	msm_mux_emac_gcc0,
 	msm_mux_rgmii_rxc,
 	msm_mux_dp_hot,
+	msm_mux_egpio,
 	msm_mux_emac_gcc1,
 	msm_mux_rgmii_rxd3,
 	msm_mux_debug_hot,
@@ -596,6 +603,9 @@ static const char * const gpio_groups[] = {
 	"gpio105", "gpio106", "gpio107", "gpio108", "gpio109", "gpio110",
 	"gpio111", "gpio112", "gpio113", "gpio114", "gpio115", "gpio116",
 	"gpio117", "gpio118", "gpio119", "gpio120", "gpio121", "gpio122",
+};
+static const char * const egpio_groups[] = {
+	"gpio85", "gpio98",
 };
 static const char * const qdss_gpio6_groups[] = {
 	"gpio0", "gpio30",
@@ -1312,6 +1322,7 @@ static const struct msm_function sm6150_functions[] = {
 	FUNCTION(emac_gcc0),
 	FUNCTION(rgmii_rxc),
 	FUNCTION(dp_hot),
+	FUNCTION(egpio),
 	FUNCTION(emac_gcc1),
 	FUNCTION(rgmii_rxd3),
 	FUNCTION(debug_hot),
@@ -1492,7 +1503,7 @@ static const struct msm_pingroup sm6150_groups[] = {
 			NA, NA, NA),
 	[84] = PINGROUP(84, SOUTH, NA, phase_flag12, NA, NA, NA, NA, NA, NA,
 			NA),
-	[85] = PINGROUP(85, SOUTH, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+	[85] = PINGROUP(85, SOUTH, NA, NA, NA, NA, NA, NA, NA, NA, egpio),
 	[86] = PINGROUP(86, SOUTH, copy_gp, NA, NA, NA, NA, NA, NA, NA, NA),
 	[87] = PINGROUP(87, SOUTH, NA, NA, NA, NA, NA, NA, NA, NA, NA),
 	[88] = PINGROUP(88, WEST, NA, usb0_hs_ac, NA, NA, NA, NA, NA, NA, NA),
@@ -1516,7 +1527,7 @@ static const struct msm_pingroup sm6150_groups[] = {
 	[97] = PINGROUP(97, WEST, rgmii_tx, mdp_vsync, ldo_en, qdss_cti, NA,
 			NA, NA, NA, NA),
 	[98] = PINGROUP(98, WEST, mdp_vsync, ldo_update, qdss_cti, NA, NA, NA,
-			NA, NA, NA),
+			NA, NA, egpio),
 	[99] = PINGROUP(99, EAST, prng_rosc, NA, NA, NA, NA, NA, NA, NA, NA),
 	[100] = PINGROUP(100, WEST, NA, NA, NA, NA, NA, NA, NA, NA, NA),
 	[101] = PINGROUP(101, WEST, emac_gcc0, NA, NA, NA, NA, NA, NA, NA, NA),
@@ -1566,6 +1577,11 @@ static const struct msm_pingroup sm6150_groups[] = {
 	[130] = SDC_QDSD_PINGROUP(sdc2_data, 0xd98000, 9, 0),
 };
 
+static struct msm_dir_conn sm6150_dir_conn[] = {
+	  {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0},
+	  {-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}
+};
+
 static struct msm_pinctrl_soc_data sm6150_pinctrl = {
 	.pins = sm6150_pins,
 	.npins = ARRAY_SIZE(sm6150_pins),
@@ -1574,10 +1590,54 @@ static struct msm_pinctrl_soc_data sm6150_pinctrl = {
 	.groups = sm6150_groups,
 	.ngroups = ARRAY_SIZE(sm6150_groups),
 	.ngpios = 124,
+	.dir_conn = sm6150_dir_conn,
+	.egpio_func = 9,
 };
+
+static int sm6150_pinctrl_dirconn_list_probe(struct platform_device *pdev)
+{
+	int ret, n, dirconn_list_count, m;
+	struct device_node *np = pdev->dev.of_node;
+
+	n = of_property_count_elems_of_size(np, "qcom,dirconn-list",
+					sizeof(u32));
+	if (n <= 0 || n % 2)
+		return -EINVAL;
+
+	m = ARRAY_SIZE(sm6150_dir_conn) - 1;
+
+	dirconn_list_count = n / 2;
+
+	for (n = 0; n < dirconn_list_count; n++) {
+		ret = of_property_read_u32_index(np, "qcom,dirconn-list",
+						n * 2 + 0,
+						&sm6150_dir_conn[m].gpio);
+		if (ret)
+			return ret;
+		ret = of_property_read_u32_index(np, "qcom,dirconn-list",
+						n * 2 + 1,
+						&sm6150_dir_conn[m].irq);
+		if (ret)
+			return ret;
+		m--;
+	}
+
+	return 0;
+}
 
 static int sm6150_pinctrl_probe(struct platform_device *pdev)
 {
+	int len, ret;
+
+	if (of_find_property(pdev->dev.of_node, "qcom,dirconn-list", &len)) {
+		ret = sm6150_pinctrl_dirconn_list_probe(pdev);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Unable to parse Direct Connect List\n");
+			return ret;
+		}
+	}
+
 	return msm_pinctrl_probe(pdev, &sm6150_pinctrl);
 }
 

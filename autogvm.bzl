@@ -8,6 +8,7 @@ def define_autogvm():
     _autogvm_in_tree_modules = [
         # keep sorted
         "drivers/block/virtio_blk.ko",
+        "drivers/block/virtio_blk_qti_crypto.ko",
         "drivers/bus/mhi/devices/mhi_dev_uci.ko",
         "drivers/bus/mhi/host/mhi.ko",
         "drivers/char/virtio_console.ko",
@@ -27,6 +28,7 @@ def define_autogvm():
         "drivers/firmware/qcom_scm_hab.ko",
         "drivers/i2c/busses/i2c-msm-geni.ko",
         "drivers/i2c/busses/i2c-virtio.ko",
+        "drivers/iommu/arm/arm-smmu-v3/virt-arm-smmu-v3.ko",
         "drivers/iommu/arm/arm-smmu/arm_smmu.ko",
         "drivers/iommu/iommu-logger.ko",
         "drivers/iommu/qcom_iommu_debug.ko",
@@ -34,7 +36,9 @@ def define_autogvm():
         "drivers/irqchip/msm_show_resume_irq.ko",
         "drivers/irqchip/qcom-pdc.ko",
         "drivers/mailbox/msm_qmp.ko",
+        "drivers/md/dm-bow.ko",
         "drivers/mfd/qcom-spmi-pmic.ko",
+        "drivers/misc/qseecom_proxy.ko",
         "drivers/mmc/host/cqhci.ko",
         "drivers/mmc/host/sdhci-msm.ko",
         "drivers/net/net_failover.ko",
@@ -42,14 +46,14 @@ def define_autogvm():
         "drivers/pci/controller/pci-msm-drv.ko",
         "drivers/phy/qualcomm/phy-qcom-ufs.ko",
         "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4.ko",
-        "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4-kalama.ko",
-        "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4-pineapple.ko",
+        "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4-lahaina.ko",
         "drivers/phy/qualcomm/phy-qcom-ufs-qmp-v4-waipio.ko",
         "drivers/pinctrl/qcom/pinctrl-direwolf.ko",
         "drivers/pinctrl/qcom/pinctrl-lemans.ko",
         "drivers/pinctrl/qcom/pinctrl-monaco_auto.ko",
         "drivers/pinctrl/qcom/pinctrl-msm.ko",
         "drivers/pinctrl/qcom/pinctrl-sdmshrike.ko",
+        "drivers/pinctrl/qcom/pinctrl-sm6150.ko",
         "drivers/pinctrl/qcom/pinctrl-sm8150.ko",
         "drivers/pinctrl/qcom/pinctrl-spmi-gpio.ko",
         "drivers/pinctrl/qcom/pinctrl-spmi-mpp.ko",
@@ -60,6 +64,7 @@ def define_autogvm():
         "drivers/remoteproc/rproc_qcom_common.ko",
         "drivers/rtc/rtc-pm8xxx.ko",
         "drivers/soc/qcom/boot_stats.ko",
+        "drivers/soc/qcom/crypto-qti-virt.ko",
         "drivers/soc/qcom/hab/msm_hab.ko",
         "drivers/soc/qcom/hgsl/qcom_hgsl.ko",
         "drivers/soc/qcom/mem_buf/mem_buf.ko",
@@ -68,6 +73,7 @@ def define_autogvm():
         "drivers/soc/qcom/memory_dump_v2.ko",
         "drivers/soc/qcom/memshare/heap_mem_ext_v01.ko",
         "drivers/soc/qcom/memshare/msm_memshare.ko",
+        "drivers/soc/qcom/qcom_ramdump.ko",
         "drivers/soc/qcom/qcom_soc_wdt.ko",
         "drivers/soc/qcom/qcom_wdt_core.ko",
         "drivers/soc/qcom/qmi_helpers.ko",
@@ -87,6 +93,8 @@ def define_autogvm():
         "drivers/usb/gadget/function/usb_f_qdss.ko",
         "drivers/usb/misc/ehset.ko",
         "drivers/usb/phy/phy-generic.ko",
+        "drivers/usb/phy/phy-msm-qusb.ko",
+        "drivers/usb/phy/phy-msm-qusb-v2.ko",
         "drivers/usb/phy/phy-msm-snps-hs.ko",
         "drivers/usb/phy/phy-msm-ssusb-qmp.ko",
         "drivers/usb/phy/phy-qcom-emu.ko",
@@ -105,6 +113,7 @@ def define_autogvm():
     _autogvm_consolidate_in_tree_modules = _autogvm_in_tree_modules + [
         # keep sorted
         "drivers/misc/lkdtm/lkdtm.ko",
+        "drivers/usb/misc/lvstest.ko",
     ]
 
     for variant in la_variants:

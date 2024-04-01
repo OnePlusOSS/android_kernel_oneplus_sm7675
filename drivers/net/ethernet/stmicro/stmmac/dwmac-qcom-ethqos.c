@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2018-19, Linaro Limited
-// Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+// Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
 
 #include <linux/module.h>
 #include <linux/of.h>
@@ -874,6 +874,19 @@ static int ethqos_configure_mac_v3(struct qcom_ethqos *ethqos)
 	return ret;
 }
 
+static void qcom_serdes_loopback_v3_1(struct plat_stmmacenet_data *plat, bool on)
+{
+	struct qcom_ethqos *ethqos = plat->bsp_priv;
+
+	if (on)
+		rgmii_updatel(ethqos, SGMII_PHY_CNTRL1_SGMII_TX_TO_RX_LOOPBACK_EN,
+			      SGMII_PHY_CNTRL1_SGMII_TX_TO_RX_LOOPBACK_EN,
+			      EMAC_WRAPPER_SGMII_PHY_CNTRL1_v3);
+	else
+		rgmii_updatel(ethqos, SGMII_PHY_CNTRL1_SGMII_TX_TO_RX_LOOPBACK_EN, 0,
+			      EMAC_WRAPPER_SGMII_PHY_CNTRL1_v3);
+}
+
 static int ethqos_serdes_power_up(struct net_device *ndev, void *priv)
 {
 	struct qcom_ethqos *ethqos = priv;
@@ -1091,6 +1104,7 @@ static void ethqos_fix_mac_speed(void *priv, unsigned int speed)
 	int ret = 0;
 
 	ethqos->speed = speed;
+	ethqos_update_rgmii_clk(ethqos, speed);
 
 	if (ethqos->emac_ver == EMAC_HW_v3_0_0_RG)
 		ret = ethqos_configure_mac_v3(ethqos);
@@ -1226,12 +1240,17 @@ static void ethqos_defer_phy_isr_work(struct work_struct *work)
 	struct qcom_ethqos *ethqos =
 		container_of(work, struct qcom_ethqos, emac_phy_work);
 
+	if (ethqos->clks_suspended)
+		wait_for_completion(&ethqos->clk_enable_done);
+
 	ethqos_handle_phy_interrupt(ethqos);
 }
 
 static irqreturn_t ethqos_phy_isr(int irq, void *dev_data)
 {
 	struct qcom_ethqos *ethqos = (struct qcom_ethqos *)dev_data;
+
+	pm_wakeup_event(&ethqos->pdev->dev, PM_WAKEUP_MS);
 
 	queue_work(system_wq, &ethqos->emac_phy_work);
 	return IRQ_HANDLED;
@@ -1243,6 +1262,8 @@ static int ethqos_phy_intr_enable(struct qcom_ethqos *ethqos)
 	struct stmmac_priv *priv = qcom_ethqos_get_priv(ethqos);
 
 	INIT_WORK(&ethqos->emac_phy_work, ethqos_defer_phy_isr_work);
+	init_completion(&ethqos->clk_enable_done);
+
 	ret = request_irq(ethqos->phy_intr, ethqos_phy_isr,
 			  IRQF_SHARED, "stmmac", ethqos);
 	if (ret) {
@@ -1259,6 +1280,7 @@ static const struct of_device_id qcom_ethqos_match[] = {
 	{ .compatible = "qcom,emac-smmu-embedded", },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, qcom_ethqos_match);
 
 static void emac_emb_smmu_exit(void)
 {
@@ -1307,6 +1329,88 @@ static int emac_emb_smmu_cb_probe(struct platform_device *pdev,
 smmu_probe_done:
 	emac_emb_smmu_ctx.ret = result;
 	return result;
+}
+
+static void qcom_ethqos_phy_suspend_clks(struct qcom_ethqos *ethqos)
+{
+	struct stmmac_priv *priv = qcom_ethqos_get_priv(ethqos);
+
+	ETHQOSDBG("Enter\n");
+
+	if (priv->plat->phy_intr_en_extn_stm)
+		reinit_completion(&ethqos->clk_enable_done);
+
+	ethqos->clks_suspended = 1;
+
+	ethqos_update_rgmii_clk(ethqos, 0);
+
+	if (!IS_ERR(priv->plat->stmmac_clk))
+		clk_disable_unprepare(priv->plat->stmmac_clk);
+
+	if (!IS_ERR(priv->plat->pclk))
+		clk_disable_unprepare(priv->plat->pclk);
+
+	if (!IS_ERR(priv->plat->clk_ptp_ref))
+		clk_disable_unprepare(priv->plat->clk_ptp_ref);
+
+	if (!IS_ERR(ethqos->rgmii_clk))
+		clk_disable_unprepare(ethqos->rgmii_clk);
+
+	if (!IS_ERR(ethqos->phyaux_clk))
+		clk_disable_unprepare(ethqos->phyaux_clk);
+
+	if (!IS_ERR(ethqos->sgmiref_clk))
+		clk_disable_unprepare(ethqos->sgmiref_clk);
+
+	ETHQOSDBG("Exit\n");
+}
+
+static inline bool qcom_ethqos_is_phy_link_up(struct qcom_ethqos *ethqos)
+{
+	/* PHY driver initializes phydev->link=1.
+	 * So, phydev->link is 1 even on bootup with no PHY connected.
+	 * phydev->link is valid only after adjust_link is called once.
+	 */
+	struct stmmac_priv *priv = qcom_ethqos_get_priv(ethqos);
+
+	return (priv->dev->phydev && priv->dev->phydev->link);
+}
+
+static void qcom_ethqos_phy_resume_clks(struct qcom_ethqos *ethqos)
+{
+	struct stmmac_priv *priv = qcom_ethqos_get_priv(ethqos);
+
+	ETHQOSDBG("Enter\n");
+
+	if (!IS_ERR(priv->plat->stmmac_clk))
+		clk_prepare_enable(priv->plat->stmmac_clk);
+
+	if (!IS_ERR(priv->plat->pclk))
+		clk_prepare_enable(priv->plat->pclk);
+
+	if (!IS_ERR(priv->plat->clk_ptp_ref))
+		clk_prepare_enable(priv->plat->clk_ptp_ref);
+
+	if (!IS_ERR(ethqos->rgmii_clk))
+		clk_prepare_enable(ethqos->rgmii_clk);
+
+	if (!IS_ERR(ethqos->sgmiref_clk))
+		clk_prepare_enable(ethqos->sgmiref_clk);
+
+	if (!IS_ERR(ethqos->phyaux_clk))
+		clk_prepare_enable(ethqos->phyaux_clk);
+
+	if (qcom_ethqos_is_phy_link_up(ethqos))
+		ethqos_update_rgmii_clk(ethqos, ethqos->speed);
+	else
+		ethqos_update_rgmii_clk(ethqos, SPEED_10);
+
+	ethqos->clks_suspended = 0;
+
+	if (priv->plat->phy_intr_en_extn_stm)
+		complete_all(&ethqos->clk_enable_done);
+
+	ETHQOSDBG("Exit\n");
 }
 
 static int qcom_ethqos_probe(struct platform_device *pdev)
@@ -1370,6 +1474,7 @@ static int qcom_ethqos_probe(struct platform_device *pdev)
 
 	plat_dat->bsp_priv = ethqos;
 	plat_dat->fix_mac_speed = ethqos_fix_mac_speed;
+	plat_dat->serdes_loopback_v3_1 = qcom_serdes_loopback_v3_1;
 	plat_dat->dump_debug_regs = rgmii_dump;
 	plat_dat->has_gmac4 = 1;
 	if (plat_dat->interface == PHY_INTERFACE_MODE_SGMII ||
@@ -1419,9 +1524,25 @@ static int qcom_ethqos_probe(struct platform_device *pdev)
 	}
 	ETHQOSDBG(": emac_core_version = %d\n", ethqos->emac_ver);
 
+	if (of_property_read_bool(pdev->dev.of_node,
+				  "gdsc-off-on-suspend")) {
+		ethqos->gdsc_off_on_suspend = true;
+	} else {
+		ethqos->gdsc_off_on_suspend = false;
+	}
+	ETHQOSDBG("gdsc-off-on-suspend = %d\n",
+		  ethqos->gdsc_off_on_suspend);
+
 	ret = stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
 	if (ret)
 		goto err_clk;
+
+	if (of_property_read_bool(np, "pcs-v3")) {
+		plat_dat->pcs_v3 = true;
+	} else {
+		plat_dat->pcs_v3 = false;
+		ETHQOSDBG(":pcs-v3 not in dtsi\n");
+	}
 
 	if (!ethqos_phy_intr_config(ethqos)) {
 		if (ethqos_phy_intr_enable(ethqos))
@@ -1457,6 +1578,10 @@ static int qcom_ethqos_remove(struct platform_device *pdev)
 
 	if (priv->plat->phy_intr_en_extn_stm)
 		free_irq(ethqos->phy_intr, ethqos);
+
+	if (priv->plat->phy_intr_en_extn_stm)
+		cancel_work_sync(&ethqos->emac_phy_work);
+
 	emac_emb_smmu_exit();
 	ethqos_disable_regulators(ethqos);
 	ethqos_clks_config(ethqos, false);
@@ -1464,13 +1589,88 @@ static int qcom_ethqos_remove(struct platform_device *pdev)
 	return ret;
 }
 
-MODULE_DEVICE_TABLE(of, qcom_ethqos_match);
+static int qcom_ethqos_suspend(struct device *dev)
+{
+	struct qcom_ethqos *ethqos;
+	struct net_device *ndev = NULL;
+	int ret;
+
+	if (of_device_is_compatible(dev->of_node, "qcom,emac-smmu-embedded")) {
+		ETHQOSDBG("smmu return\n");
+		return 0;
+	}
+
+	ethqos = get_stmmac_bsp_priv(dev);
+	if (!ethqos)
+		return -ENODEV;
+
+	ndev = dev_get_drvdata(dev);
+	if (!ndev || !netif_running(ndev))
+		return -EINVAL;
+
+	ret = stmmac_suspend(dev);
+	qcom_ethqos_phy_suspend_clks(ethqos);
+
+	if (ethqos->gdsc_off_on_suspend) {
+		if (ethqos->gdsc_emac) {
+			regulator_disable(ethqos->gdsc_emac);
+			ETHQOSDBG("Disabled <%s>\n", EMAC_GDSC_EMAC_NAME);
+		}
+	}
+
+	ETHQOSDBG(" ret = %d\n", ret);
+	return ret;
+}
+
+static int qcom_ethqos_resume(struct device *dev)
+{
+	struct net_device *ndev = NULL;
+	struct qcom_ethqos *ethqos;
+	int ret;
+
+	ETHQOSDBG("Resume Enter\n");
+	if (of_device_is_compatible(dev->of_node, "qcom,emac-smmu-embedded"))
+		return 0;
+
+	ethqos = get_stmmac_bsp_priv(dev);
+
+	if (!ethqos)
+		return -ENODEV;
+
+	if (ethqos->gdsc_off_on_suspend) {
+		ret = regulator_enable(ethqos->gdsc_emac);
+		if (ret)
+			ETHQOSERR("Can not enable <%s>\n", EMAC_GDSC_EMAC_NAME);
+		ETHQOSDBG("Enabled <%s>\n", EMAC_GDSC_EMAC_NAME);
+	}
+
+	ndev = dev_get_drvdata(dev);
+	if (!ndev || !netif_running(ndev)) {
+		ETHQOSERR(" Resume not possible\n");
+		return -EINVAL;
+	}
+
+	qcom_ethqos_phy_resume_clks(ethqos);
+	if (ethqos->gdsc_off_on_suspend)
+		ethqos_set_func_clk_en(ethqos);
+
+	ret = stmmac_resume(dev);
+
+	ETHQOSDBG("<--Resume Exit\n");
+	return ret;
+}
+
+static const struct dev_pm_ops qcom_ethqos_pm_ops = {
+	.suspend = qcom_ethqos_suspend,
+	.resume = qcom_ethqos_resume,
+};
 
 static struct platform_driver qcom_ethqos_driver = {
 	.probe  = qcom_ethqos_probe,
 	.remove = qcom_ethqos_remove,
 	.driver = {
 		.name           = DRV_NAME,
+		.pm             = &qcom_ethqos_pm_ops,
 		.of_match_table = of_match_ptr(qcom_ethqos_match),
 	},
 };

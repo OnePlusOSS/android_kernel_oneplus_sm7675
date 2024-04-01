@@ -51,6 +51,7 @@
  * @desc:           pin controller descriptor
  * @restart_nb:     restart notifier block.
  * @irq:            parent irq for the TLMM irq_chip.
+ * @n_dir_conns:    The number of pins directly connected to GIC.
  * @intr_target_use_scm: route irq to application cpu using scm calls
  * @lock:           Spinlock to protect register resources as well
  *                  as msm_pinctrl data structures.
@@ -72,6 +73,7 @@ struct msm_pinctrl {
 	struct notifier_block restart_nb;
 
 	int irq;
+	int n_dir_conns;
 
 	bool intr_target_use_scm;
 
@@ -238,6 +240,7 @@ static int msm_pinmux_set_mux(struct pinctrl_dev *pctldev,
 {
 	struct msm_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctldev);
 	struct gpio_chip *gc = &pctrl->chip;
+	const struct  msm_pinctrl_soc_data *ps = pctrl->soc;
 	unsigned int irq = irq_find_mapping(gc->irq.domain, group);
 	struct irq_data *d = irq_get_irq_data(irq);
 	unsigned int gpio_func = pctrl->soc->gpio_func;
@@ -301,9 +304,13 @@ static int msm_pinmux_set_mux(struct pinctrl_dev *pctldev,
 	} else {
 		val &= ~mask;
 		val |= i << g->mux_bit;
-		/* Claim ownership of pin if egpio capable */
-		if (egpio_func && val & BIT(g->egpio_present))
-			val |= BIT(g->egpio_enable);
+		/* Claim ownership of pin if egpio capable and
+		 * also need check if setting NA in funcs.
+		 */
+		if (egpio_func && val & BIT(g->egpio_present)) {
+			if (g->funcs[egpio_func] != ps->nfunctions)
+				val |= BIT(g->egpio_enable);
+		}
 	}
 
 	msm_writel_ctl(val, pctrl, g);
@@ -722,6 +729,13 @@ static void msm_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 	g = &pctrl->soc->groups[offset];
 
+//#ifdef OPLUS_ARCH_EXTENDS
+//add for case 06617221 fix gpio reset isue
+	val = msm_readl_ctl(pctrl, g);
+	val |= BIT(EGPIO_ENABLE);
+	msm_writel_ctl(val, pctrl, g);
+//#endif /* OPLUS_ARCH_EXTENDS */
+
 	raw_spin_lock_irqsave(&pctrl->lock, flags);
 
 	val = msm_readl_io(pctrl, g);
@@ -1040,6 +1054,77 @@ static void msm_gpio_irq_unmask(struct irq_data *d)
 	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 }
 
+static void msm_gpio_dirconn_handler(struct irq_desc *desc)
+{
+	struct irq_data *irqd = irq_desc_get_handler_data(desc);
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+
+	if (!irqd)
+		return;
+
+	chained_irq_enter(chip, desc);
+	generic_handle_irq(irqd->irq);
+	chained_irq_exit(chip, desc);
+	irq_set_irqchip_state(irq_desc_get_irq_data(desc)->irq,
+				IRQCHIP_STATE_ACTIVE, 0);
+}
+
+static void configure_tlmm_dc_polarity(struct irq_data *d,
+				unsigned int type, u32 offset)
+{
+	const struct msm_pingroup *g;
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+	unsigned int polarity = 1, val;
+	unsigned long flags;
+
+	if (type & (IRQ_TYPE_EDGE_RISING | IRQ_TYPE_LEVEL_HIGH)) {
+		/*
+		 * Since the default polarity is set to 0, change it to 1 for
+		 * Rising edge and active high interrupt type such that the line
+		 * is not inverted.
+		 */
+		raw_spin_lock_irqsave(&pctrl->lock, flags);
+		g = &pctrl->soc->groups[d->hwirq];
+		val = readl_relaxed(msm_pinctrl_data->regs[g->tile] +
+						g->dir_conn_reg + (offset * 4));
+		val |= polarity << 8;
+		writel_relaxed(val, msm_pinctrl_data->regs[g->tile] +
+						g->dir_conn_reg + (offset * 4));
+		raw_spin_unlock_irqrestore(&pctrl->lock, flags);
+	}
+}
+
+static void enable_tlmm_dc(irq_hw_number_t irq)
+{
+	struct irq_data *dir_conn_data = irq_get_irq_data(irq);
+
+	if (!dir_conn_data || !(dir_conn_data->chip))
+		return;
+
+	dir_conn_data->chip->irq_unmask(dir_conn_data);
+}
+
+static bool is_gpio_tlmm_dc(struct irq_data *d, u32 *offset,
+				irq_hw_number_t *irq)
+{
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+	struct msm_dir_conn *dc;
+	int i;
+
+	for (i = pctrl->n_dir_conns; i > 0; i--) {
+		dc = &pctrl->soc->dir_conn[i];
+		*offset = pctrl->n_dir_conns - i;
+		*irq = dc->irq;
+
+		if (dc->gpio == d->hwirq)
+			return true;
+	}
+
+	return false;
+}
+
 static void msm_gpio_irq_enable(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
@@ -1158,12 +1243,37 @@ static bool msm_gpio_needs_dual_edge_parent_workaround(struct irq_data *d,
 	       test_bit(d->hwirq, pctrl->skip_wake_irqs);
 }
 
+static void msm_dirconn_cfg_reg(struct irq_data *d, u32 offset)
+{
+	u32 val;
+	const struct msm_pingroup *g;
+	unsigned long flags;
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+
+	raw_spin_lock_irqsave(&pctrl->lock, flags);
+	g = &pctrl->soc->groups[d->hwirq];
+
+	val = (d->hwirq) & 0xFF;
+
+	writel_relaxed(val, pctrl->regs[g->tile] + g->dir_conn_reg
+					+ (offset * 4));
+
+	val = msm_readl_intr_cfg(pctrl, g);
+	val |= BIT(g->dir_conn_en_bit);
+
+	msm_writel_intr_cfg(val, pctrl, g);
+	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
+}
+
 static int msm_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
 	const struct msm_pingroup *g;
+	irq_hw_number_t irq = 0;
 	unsigned long flags;
+	u32 offset = 0;
 	bool was_enabled;
 	u32 val;
 
@@ -1180,6 +1290,16 @@ static int msm_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 	if (test_bit(d->hwirq, pctrl->skip_wake_irqs)) {
 		clear_bit(d->hwirq, pctrl->dual_edge_irqs);
 		irq_set_handler_locked(d, handle_fasteoi_irq);
+		return 0;
+	}
+
+	if (is_gpio_tlmm_dc(d, &offset, &irq) && type != IRQ_TYPE_EDGE_BOTH) {
+		configure_tlmm_dc_polarity(d, type, offset);
+		enable_tlmm_dc(irq);
+		if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
+			irq_set_handler_locked(d, handle_level_irq);
+		else if (type & (IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
+			irq_set_handler_locked(d, handle_edge_irq);
 		return 0;
 	}
 
@@ -1362,6 +1482,21 @@ static int msm_gpio_irq_set_affinity(struct irq_data *d,
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+	unsigned int i, n_dir_conns = pctrl->n_dir_conns;
+	struct irq_data *gpio_irq_data;
+	struct msm_dir_conn *dc = NULL;
+
+	for (i = n_dir_conns; i > 0; i--) {
+		dc = &pctrl->soc->dir_conn[i];
+		gpio_irq_data = irq_get_irq_data(dc->irq);
+
+		if (!gpio_irq_data || !(gpio_irq_data->chip) ||
+				!(gpio_irq_data->chip->irq_set_affinity))
+			continue;
+
+		if (d->hwirq == dc->gpio)
+			return gpio_irq_data->chip->irq_set_affinity(gpio_irq_data, dest, force);
+	}
 
 	if (d->parent_data && test_bit(d->hwirq, pctrl->skip_wake_irqs))
 		return irq_chip_set_affinity_parent(d, dest, force);
@@ -1610,6 +1745,36 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 	}
 
 	return 0;
+}
+
+static void msm_gpio_setup_dir_connects(struct msm_pinctrl *pctrl)
+{
+	struct msm_dir_conn *dc = NULL;
+	unsigned int i, n_dir_conns = pctrl->n_dir_conns, offset = 0;
+	irq_hw_number_t dirconn_irq = 0, gpio_irq = 0;
+	struct irq_data *gpio_irq_data;
+	struct irq_domain *child_domain = pctrl->chip.irq.domain;
+
+	for (i = n_dir_conns; i > 0; i--) {
+		dc = &pctrl->soc->dir_conn[i];
+		dirconn_irq = dc->irq;
+		offset = n_dir_conns - i;
+
+		if (dc->gpio == -1)
+			continue;
+
+		gpio_irq = irq_create_mapping(child_domain, dc->gpio);
+		irq_set_parent(gpio_irq, dirconn_irq);
+		irq_set_chip_data(gpio_irq, &(pctrl->chip));
+		irq_set_chip_and_handler_name(gpio_irq, &msm_gpio_irq_chip, NULL, NULL);
+
+		gpio_irq_data = irq_get_irq_data(gpio_irq);
+		if (!gpio_irq_data)
+			continue;
+
+		irq_set_handler_data(dirconn_irq, gpio_irq_data);
+		msm_dirconn_cfg_reg(gpio_irq_data, offset);
+	}
 }
 
 static int msm_ps_hold_restart(struct notifier_block *nb, unsigned long action,
@@ -1949,6 +2114,32 @@ int msm_qup_read(unsigned int mode)
 }
 EXPORT_SYMBOL(msm_qup_read);
 
+static void msm_gpio_wakeup_init(struct msm_pinctrl *pctrl)
+{
+	struct device_node *gpio_wakeup;
+	uint32_t gpio_num = 0, i = 0;
+	uint32_t * gpio_table;
+	gpio_wakeup = of_find_compatible_node(pctrl->dev->of_node, NULL, "gpio_wakeup");
+	if (!gpio_wakeup) {
+		pr_err("Disable wakeup gpip function not confing\n");
+		return;
+	}
+	gpio_num = of_property_count_elems_of_size(gpio_wakeup, "gpio_table", sizeof(uint32_t));
+	if (gpio_num == -EINVAL){
+		pr_err("Have no wakeup gpio disable\n");
+		return;
+	}
+
+	gpio_table = (uint32_t *)kzalloc(sizeof(uint32_t)*gpio_num, GFP_KERNEL);
+	of_property_read_u32_array(gpio_wakeup, "gpio_table", gpio_table, gpio_num);
+
+	for(i=0; i<gpio_num; i++){
+		msm_gpio_mpm_wake_set(gpio_table[i], false);
+		pr_info("The wakeup function of GPIO_%d has been disabled!",gpio_table[i]);
+	}
+
+}
+
 int msm_spare_write(int spare_reg, u32 val)
 {
 	u32 offset;
@@ -1993,8 +2184,7 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 {
 	struct msm_pinctrl *pctrl;
 	struct resource *res;
-	int ret;
-	int i;
+	int ret, i, num_irq, irq;
 
 	msm_pinctrl_data = pctrl = devm_kzalloc(&pdev->dev, sizeof(*pctrl), GFP_KERNEL);
 	if (!pctrl)
@@ -2056,6 +2246,20 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 	if (ret)
 		return ret;
 
+	num_irq = platform_irq_count(pdev);
+
+	for (i = 1; i < num_irq; i++) {
+		struct msm_dir_conn *dc = &soc_data->dir_conn[i];
+
+		irq = platform_get_irq(pdev, i);
+		dc->irq = irq;
+		__irq_set_handler(irq, msm_gpio_dirconn_handler, false, NULL);
+		irq_set_irq_type(irq, IRQ_TYPE_EDGE_RISING);
+		pctrl->n_dir_conns++;
+	}
+
+	msm_gpio_setup_dir_connects(pctrl);
+
 	pinctrl_msm_log_mask = false;
 
 	platform_set_drvdata(pdev, pctrl);
@@ -2064,6 +2268,8 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 	ret = register_pm_notifier(&pinctrl_notif_block);
 	if (ret)
 		return ret;
+
+	msm_gpio_wakeup_init(pctrl);
 
 	dev_dbg(&pdev->dev, "Probed Qualcomm pinctrl driver\n");
 

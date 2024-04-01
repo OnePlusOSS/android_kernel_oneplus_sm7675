@@ -23,6 +23,14 @@
 
 #define MSEC_TO_NSEC (1000 * 1000)
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_fair.h>
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+#include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
+#endif
+
 #ifdef CONFIG_HZ_300
 /*
  * Tick interval becomes to 3333333 due to
@@ -43,6 +51,7 @@
 #define MAX_MARGIN_LEVELS (MAX_CLUSTERS - 1)
 
 extern bool walt_disabled;
+extern bool waltgov_disabled;
 
 enum task_event {
 	PUT_PREV_TASK	= 0,
@@ -69,6 +78,7 @@ enum freq_caps {
 	PARTIAL_HALT_CAP,
 	SMART_FMAX_CAP,
 	HIGH_PERF_CAP,
+	FREQ_REL_CAP,
 	MAX_FREQ_CAP,
 };
 
@@ -174,10 +184,21 @@ struct walt_sched_cluster {
 	unsigned int		smart_fmax_cap;
 };
 
+struct freq_relation_map {
+	unsigned int src_freq;
+	unsigned int tgt_freq;
+	int target_cluster_cpu;
+};
+#define MAX_FREQ_RELATIONS     10
+#define TUPLE_SIZE     3
+
 extern struct walt_sched_cluster *sched_cluster[WALT_NR_CPUS];
 extern cpumask_t part_haltable_cpus;
+extern cpumask_t cpus_paused_by_us;
+extern cpumask_t cpus_part_paused_by_us;
 /*END SCHED.H PORT*/
 
+extern u64 walt_sched_clock(void);
 extern int num_sched_clusters;
 extern int nr_big_cpus;
 extern unsigned int sched_capacity_margin_up[WALT_NR_CPUS];
@@ -216,6 +237,7 @@ extern int register_walt_callback(void);
 extern int input_boost_init(void);
 extern int core_ctl_init(void);
 extern void rebuild_sched_domains(void);
+void update_freq_relation(struct walt_sched_cluster *cluster);
 
 extern atomic64_t walt_irq_work_lastq_ws;
 extern unsigned int __read_mostly sched_ravg_window;
@@ -260,6 +282,9 @@ extern unsigned int sysctl_ed_boost_pct;
 extern unsigned int sysctl_em_inflate_pct;
 extern unsigned int sysctl_em_inflate_thres;
 extern unsigned int sysctl_sched_heavy_nr;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+extern unsigned int enable_pipeline_boost;
+#endif
 
 extern int cpufreq_walt_set_adaptive_freq(unsigned int cpu, unsigned int adaptive_low_freq,
 					  unsigned int adaptive_high_freq);
@@ -281,6 +306,11 @@ extern unsigned int fmax_cap[MAX_FREQ_CAP][MAX_CLUSTERS];
 extern int sched_dynamic_tp_handler(struct ctl_table *table, int write,
 			void __user *buffer, size_t *lenp, loff_t *ppos);
 
+#ifdef CONFIG_OPLUS_FEATURE_SUGOV_TL
+extern unsigned int get_targetload(struct cpufreq_policy *policy);
+#endif /* CONFIG_OPLUS_FEATURE_SUGOV_TL */
+
+extern struct freq_relation_map relation_data[MAX_CLUSTERS][MAX_FREQ_RELATIONS];
 extern struct list_head cluster_head;
 #define for_each_sched_cluster(cluster) \
 	list_for_each_entry_rcu(cluster, &cluster_head, list)
@@ -349,6 +379,7 @@ extern char sched_lib_name[LIB_PATH_LENGTH];
 extern unsigned int sched_lib_mask_force;
 
 extern cpumask_t cpus_for_sbt_pause;
+extern unsigned int sysctl_sched_sbt_enable;
 extern unsigned int sysctl_sched_sbt_delay_windows;
 
 extern cpumask_t cpus_for_pipeline;
@@ -362,6 +393,9 @@ extern cpumask_t cpus_for_pipeline;
 #define WALT_CPUFREQ_BOOST_UPDATE	0x20
 #define WALT_CPUFREQ_ASYM_FIXUP		0x40
 #define WALT_CPUFREQ_SHARED_RAIL	0x80
+#if IS_ENABLED(CONFIG_OPLUS_CPUFREQ_IOWAIT_PROTECT)
+#define WALT_CPUFREQ_IOWAIT     (1U << 10)
+#endif
 
 #define CPUFREQ_REASON_LOAD		0
 #define CPUFREQ_REASON_BTR		0x1
@@ -379,6 +413,7 @@ extern cpumask_t cpus_for_pipeline;
 #define CPUFREQ_REASON_SMART_FMAX_CAP	0x1000
 #define CPUFREQ_REASON_HIGH_PERF_CAP	0x2000
 #define CPUFREQ_REASON_PARTIAL_HALT_CAP	0x4000
+#define CPUFREQ_REASON_FREQ_REL_CAP	0x8000
 
 enum sched_boost_policy {
 	SCHED_BOOST_NONE,
@@ -536,6 +571,11 @@ static inline bool rt_boost_on_big(void)
 static inline bool is_full_throttle_boost(void)
 {
 	return sched_boost_type == FULL_THROTTLE_BOOST;
+}
+
+static inline bool is_conservative_boost(void)
+{
+	return sched_boost_type == CONSERVATIVE_BOOST;
 }
 
 static inline bool is_storage_boost(void)
@@ -799,7 +839,7 @@ extern struct cpumask __cpu_partial_halt_mask;
 static bool check_for_higher_capacity(int cpu1, int cpu2)
 {
 	if (cpu_partial_halted(cpu1) && is_min_possible_cluster_cpu(cpu2))
-		return true;
+		return false;
 
 	if (is_min_possible_cluster_cpu(cpu1) && cpu_partial_halted(cpu2))
 		return false;
@@ -865,6 +905,7 @@ extern void sched_update_hyst_times(void);
 extern void walt_rt_init(void);
 extern void walt_cfs_init(void);
 extern void walt_halt_init(void);
+extern void walt_mvp_lock_ordering_init(void);
 extern void walt_fixup_init(void);
 extern int walt_find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 					int sync, int sibling_count_hint);
@@ -1038,6 +1079,16 @@ static inline bool is_state1(void)
 /* determine if this task should be allowed to use a partially halted cpu */
 static inline bool task_reject_partialhalt_cpu(struct task_struct *p, int cpu)
 {
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	if (!task_tpd_check(p, cpu))
+		return true;
+	if (should_ux_task_skip_cpu(p, cpu))
+		return true;
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	if (fbg_skip_migration(p, task_cpu(p), cpu))
+		return true;
+#endif
 	if (p->prio < MAX_RT_PRIO)
 		return false;
 
@@ -1125,11 +1176,14 @@ static inline bool has_internal_freq_limit_changed(struct walt_sched_cluster *cl
 	int i;
 
 	internal_freq = cluster->walt_internal_freq_limit;
-
 	cluster->walt_internal_freq_limit = cluster->max_freq;
-	for (i = 0; i < MAX_FREQ_CAP; i++)
-		cluster->walt_internal_freq_limit = min(fmax_cap[i][cluster->id],
+
+	if (likely(!waltgov_disabled)) {
+		for (i = 0; i < MAX_FREQ_CAP; i++)
+			cluster->walt_internal_freq_limit = min(fmax_cap[i][cluster->id],
 					     cluster->walt_internal_freq_limit);
+	}
+
 	return cluster->walt_internal_freq_limit != internal_freq;
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2022, Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/acpi.h>
@@ -28,6 +28,12 @@
 #include <trace/hooks/ufshcd.h>
 #include <linux/ipc_logging.h>
 #include <soc/qcom/minidump.h>
+#include <linux/proc_fs.h>
+#include <scsi/scsi.h>
+#include <scsi/scsi_ioctl.h>
+#include <scsi/scsi_cmnd.h>
+//bsp.storage.ufs 2021.10.14 add for /proc/devinfo/ufs
+#include <soc/oplus/device_info.h>
 #ifdef CONFIG_SCHED_WALT
 #include <linux/sched/walt.h>
 #endif
@@ -42,6 +48,15 @@
 #include <ufs/ufshci.h>
 #include <ufs/ufs_quirks.h>
 #include <ufs/ufshcd-crypto-qti.h>
+#include <../../../fs/proc/internal.h>
+#include <soc/qcom/socinfo.h>
+//#include "../core/ufshcd-priv.h"
+
+extern int ufshcd_query_descriptor_retry(struct ufs_hba *hba,
+				  enum query_opcode opcode,
+				  enum desc_idn idn, u8 index,
+				  u8 selector,
+				  u8 *desc_buf, int *buf_len);
 
 #define MCQ_QCFGPTR_MASK	GENMASK(7, 0)
 #define MCQ_QCFGPTR_UNIT	0x200
@@ -66,6 +81,12 @@
 
 #define UFS_QCOM_BER_TH_DEF_G1_G4	0
 #define UFS_QCOM_BER_TH_DEF_G5	3
+
+#define UFS_CPU_FREQ_MAX_SILVER  2035200
+#define UFS_CPU_FREQ_MAX_GOLD_TITANIUM	2707200
+#define UFS_CPU_FREQ_MAX_PRIME  2688000
+#define SOCINFO_8650  557
+
 /*
  * Default time window of PHY BER monitor in millisecond.
  * Can be overridden by MODULE CmdLine and MODULE sysfs node.
@@ -82,6 +103,7 @@
 				       ##__VA_ARGS__);	\
 	} while (0)
 
+atomic_t ufs_init_done;
 enum {
 	UFS_QCOM_CMD_SEND,
 	UFS_QCOM_CMD_COMPL,
@@ -90,6 +112,13 @@ enum {
 static char android_boot_dev[ANDROID_BOOT_DEV_MAX];
 
 static DEFINE_PER_CPU(struct freq_qos_request, qos_min_req);
+/*feature-flashaging806-v001-1-begin*/
+struct unipro_signal_quality_ctrl signalCtrl;
+static const char *ufs_null_device_strs = "nullnullnullnull";//defined in scsi_alloc_sdev
+/*feature-flashaging806-v001-1-end*/
+
+int ufsplus_wb_status = 0;
+int ufsplus_hpb_status = 0;
 
 int ufsqcom_dump_regs(struct ufs_hba *hba, size_t offset, size_t len,
 		     const char *prefix, enum ufshcd_res id)
@@ -1633,10 +1662,12 @@ static void ufs_qcom_cpufreq_dwork(struct work_struct *work)
 
 	if (cur_thres > NUM_REQS_HIGH_THRESH && !host->cur_freq_vote) {
 		scale_up = 1;
-		ufs_qcom_toggle_pri_affinity(host->hba, true);
+		if (host->irq_affinity_support)
+			ufs_qcom_toggle_pri_affinity(host->hba, true);
 	} else if (cur_thres < NUM_REQS_LOW_THRESH && host->cur_freq_vote) {
 		scale_up = 0;
-		ufs_qcom_toggle_pri_affinity(host->hba, false);
+		if (host->irq_affinity_support)
+			ufs_qcom_toggle_pri_affinity(host->hba, false);
 	} else
 		goto out;
 
@@ -2095,6 +2126,23 @@ err:
 	return NULL;
 }
 
+/**
+ * ufs_qcom_enable_crash_on_err - read from DTS whether crash_on_err
+ * should be enabled during boot.
+ * @hba: per adapter instance
+ */
+static void ufs_qcom_enable_crash_on_err(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	struct device *dev = hba->dev;
+	struct device_node *np = dev->of_node;
+
+	if (!np)
+		return;
+	host->crash_on_err =
+		of_property_read_bool(np, "qcom,enable_crash_on_err");
+}
+
 static int ufs_qcom_bus_register(struct ufs_qcom_host *host)
 {
 	int err = 0;
@@ -2279,11 +2327,12 @@ struct ufs_qcom_dev_params ufs_qcom_cap;
 					       PA_NO_ADAPT);
 			}
 		}
+		if (hba->dev_quirks & UFS_DEVICE_QUIRK_PA_TX_DEEMPHASIS_TUNING)
+			ufs_qcom_set_tx_hs_equalizer(hba,
+				dev_req_params->gear_tx, dev_req_params->lane_tx);
+
 		break;
 	case POST_CHANGE:
-		ufs_qcom_set_tx_hs_equalizer(hba,
-			dev_req_params->gear_tx, dev_req_params->lane_tx);
-
 		if (ufs_qcom_cfg_timers(hba, dev_req_params->gear_rx,
 					dev_req_params->pwr_rx,
 					dev_req_params->hs_rate, false)) {
@@ -2530,10 +2579,8 @@ static void ufs_qcom_advertise_quirks(struct ufs_hba *hba)
 				| UFSHCD_QUIRK_BROKEN_PA_RXHSUNTERMCAP);
 	}
 
-	if (host->disable_lpm)
+	if (host->disable_lpm || host->broken_ahit_wa)
 		hba->quirks |= UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8;
-
-	hba->quirks |= UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8;
 
 #if IS_ENABLED(CONFIG_SCSI_UFS_CRYPTO_QTI)
 	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_CUSTOM_CRYPTO_PROFILE;
@@ -2547,7 +2594,7 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	if (!host->disable_lpm) {
 		hba->caps |= UFSHCD_CAP_CLK_GATING |
 			UFSHCD_CAP_HIBERN8_WITH_CLK_GATING |
-			UFSHCD_CAP_CLK_SCALING |
+			/*UFSHCD_CAP_CLK_SCALING |*/
 			UFSHCD_CAP_AUTO_BKOPS_SUSPEND |
 			UFSHCD_CAP_AGGR_POWER_COLLAPSE |
 			UFSHCD_CAP_WB_WITH_CLK_SCALING;
@@ -2845,6 +2892,362 @@ static void ufs_qcom_save_host_ptr(struct ufs_hba *hba)
 		dev_err(hba->dev, "invalid host index %d\n", id);
 }
 
+/*feature-memorymonitor-v001-1-begin*/
+static int monitor_verify_command(unsigned char *cmd)
+{
+    if (cmd[0] != 0x3B && cmd[0] != 0x3C && cmd[0] != 0xC0)
+        return false;
+
+    return true;
+}
+
+/**
+ * ufs_ioctl_monitor - special cmd for memory monitor
+ * @hba: per-adapter instance
+ * @buf_user: user space buffer for ioctl data
+ * @return: 0 for success negative error code otherwise
+ *
+ */
+int ufs_ioctl_monitor(struct scsi_device *dev, void __user *buf_user)
+{
+	struct request *req;
+	struct scsi_cmnd *scmd;
+	struct scsi_ioctl_command __user *sic = (struct scsi_ioctl_command __user *)buf_user;
+	int err;
+	unsigned int in_len, out_len, bytes, opcode, cmdlen;
+	char *buffer = NULL;
+
+	/*
+	 * get in an out lengths, verify they don't exceed a page worth of data
+	 */
+	if (get_user(in_len, &sic->inlen))
+		return -EFAULT;
+	if (get_user(out_len, &sic->outlen))
+		return -EFAULT;
+	if (in_len > PAGE_SIZE || out_len > PAGE_SIZE)
+		return -EINVAL;
+	if (get_user(opcode, sic->data))
+		return -EFAULT;
+
+	bytes = max(in_len, out_len);
+	if (bytes) {
+		buffer = kzalloc(bytes, GFP_NOIO | GFP_USER| __GFP_NOWARN);
+		if (!buffer)
+			return -ENOMEM;
+
+	}
+
+	req = scsi_alloc_request(dev->request_queue, in_len ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN, 0);
+	if (IS_ERR(req)) {
+		err = PTR_ERR(req);
+		goto error_free_buffer;
+	}
+	scmd = blk_mq_rq_to_pdu(req);
+
+	cmdlen = COMMAND_SIZE(opcode);
+	if ((VENDOR_SPECIFIC_CDB == opcode) &&(0 == strncmp(dev->vendor, "SAMSUNG ", 8)))
+		cmdlen = 16;
+
+	/*
+	 * get command and data to send to device, if any
+	 */
+	err = -EFAULT;
+	scmd->cmd_len = cmdlen;
+	if (copy_from_user(scmd->cmnd, sic->data, cmdlen))
+		goto error;
+
+	if (in_len && copy_from_user(buffer, sic->data + cmdlen, in_len))
+		goto error;
+
+	if (!monitor_verify_command(scmd->cmnd))
+		goto error;
+
+	/* default.  possible overriden later */
+	scmd->retries = 5;
+
+	if (bytes) {
+		err = blk_rq_map_kern(dev->request_queue, req, buffer, bytes, GFP_NOIO);
+		if (err)
+			goto error;
+	}
+	blk_execute_rq(req, true);
+
+#define OMAX_SB_LEN 16          /* For backward compatibility */
+	err = scmd->result & 0xff;	/* only 8 bit SCSI status */
+	if (err) {
+		if (scmd->sense_len && scmd->sense_buffer) {
+			bytes = (OMAX_SB_LEN > scmd->sense_len) ?
+				scmd->sense_len : OMAX_SB_LEN;
+			if (copy_to_user(sic->data, scmd->sense_buffer, bytes))
+				err = -EFAULT;
+		}
+	} else {
+		if (copy_to_user(sic->data, buffer, out_len))
+			err = -EFAULT;
+	}
+
+error:
+	blk_mq_free_request(req);
+
+error_free_buffer:
+	kfree(buffer);
+
+	return err;
+}
+/*feature-memorymonitor-v001-1-end*/
+/**
+ * ufs_qcom_query_ioctl - perform user read queries
+ * @hba: per-adapter instance
+ * @lun: used for lun specific queries
+ * @buffer: user space buffer for reading and submitting query data and params
+ * @return: 0 for success negative error code otherwise
+ *
+ * Expected/Submitted buffer structure is struct ufs_ioctl_query_data.
+ * It will read the opcode, idn and buf_length parameters, and, put the
+ * response in the buffer field while updating the used size in buf_length.
+ */
+static int
+ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
+{
+	struct ufs_ioctl_query_data *ioctl_data;
+	int err = 0;
+	int length = 0;
+	void *data_ptr;
+	bool flag;
+	u32 att;
+	u8 index;
+	u8 *desc = NULL;
+
+	ioctl_data = kzalloc(sizeof(*ioctl_data), GFP_KERNEL);
+	if (!ioctl_data) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	/* extract params from user buffer */
+	err = copy_from_user(ioctl_data, buffer,
+			     sizeof(struct ufs_ioctl_query_data));
+	if (err) {
+		dev_err(hba->dev,
+			"%s: Failed copying buffer from user, err %d\n",
+			__func__, err);
+		goto out_release_mem;
+	}
+
+	/* verify legal parameters & send query */
+	switch (ioctl_data->opcode) {
+	case UPIU_QUERY_OPCODE_READ_DESC:
+		switch (ioctl_data->idn) {
+		case QUERY_DESC_IDN_DEVICE:
+		case QUERY_DESC_IDN_CONFIGURATION:
+		case QUERY_DESC_IDN_INTERCONNECT:
+		case QUERY_DESC_IDN_GEOMETRY:
+		case QUERY_DESC_IDN_POWER:
+		/*feature-memorymonitor-v001-2-begin*/
+		case QUERY_DESC_IDN_HEALTH:                
+		/*feature-memorymonitor-v001-2-end*/
+			index = 0;
+			break;
+		case QUERY_DESC_IDN_UNIT:
+			if (!ufs_is_valid_unit_desc_lun(&hba->dev_info, lun, 0)) {
+				dev_err(hba->dev,
+					"%s: No unit descriptor for lun 0x%x\n",
+					__func__, lun);
+				err = -EINVAL;
+				goto out_release_mem;
+			}
+			index = lun;
+			break;
+		default:
+			goto out_einval;
+		}
+		length = min_t(int, QUERY_DESC_MAX_SIZE,
+			       ioctl_data->buf_size);
+		desc = kzalloc(length, GFP_KERNEL);
+		if (!desc) {
+			dev_err(hba->dev, "%s: Failed allocating %d bytes\n",
+				__func__, length);
+			err = -ENOMEM;
+			goto out_release_mem;
+		}
+		err = ufshcd_query_descriptor_retry(hba, ioctl_data->opcode,
+						    ioctl_data->idn, index, 0,
+						    desc, &length);
+		break;
+	case UPIU_QUERY_OPCODE_READ_ATTR:
+		switch (ioctl_data->idn) {
+		case QUERY_ATTR_IDN_BOOT_LU_EN:
+		case QUERY_ATTR_IDN_POWER_MODE:
+		case QUERY_ATTR_IDN_ACTIVE_ICC_LVL:
+		case QUERY_ATTR_IDN_OOO_DATA_EN:
+		case QUERY_ATTR_IDN_BKOPS_STATUS:
+		case QUERY_ATTR_IDN_PURGE_STATUS:
+		case QUERY_ATTR_IDN_MAX_DATA_IN:
+		case QUERY_ATTR_IDN_MAX_DATA_OUT:
+		case QUERY_ATTR_IDN_REF_CLK_FREQ:
+		case QUERY_ATTR_IDN_CONF_DESC_LOCK:
+		case QUERY_ATTR_IDN_MAX_NUM_OF_RTT:
+		case QUERY_ATTR_IDN_EE_CONTROL:
+		case QUERY_ATTR_IDN_EE_STATUS:
+		case QUERY_ATTR_IDN_SECONDS_PASSED:
+			index = 0;
+			break;
+		case QUERY_ATTR_IDN_DYN_CAP_NEEDED:
+		case QUERY_ATTR_IDN_CORR_PRG_BLK_NUM:
+			index = lun;
+			break;
+		default:
+			goto out_einval;
+		}
+		err = ufshcd_query_attr(hba, ioctl_data->opcode,
+					ioctl_data->idn, index, 0, &att);
+		break;
+
+	case UPIU_QUERY_OPCODE_WRITE_ATTR:
+		err = copy_from_user(&att,
+				     buffer +
+				     sizeof(struct ufs_ioctl_query_data),
+				     sizeof(u32));
+		if (err) {
+			dev_err(hba->dev,
+				"%s: Failed copying buffer from user, err %d\n",
+				__func__, err);
+			goto out_release_mem;
+		}
+
+		switch (ioctl_data->idn) {
+		case QUERY_ATTR_IDN_BOOT_LU_EN:
+			index = 0;
+			if (!att) {
+				dev_err(hba->dev,
+					"%s: Illegal ufs query ioctl data, opcode 0x%x, idn 0x%x, att 0x%x\n",
+					__func__, ioctl_data->opcode,
+					(unsigned int)ioctl_data->idn, att);
+				err = -EINVAL;
+				goto out_release_mem;
+			}
+			break;
+		default:
+			goto out_einval;
+		}
+		err = ufshcd_query_attr(hba, ioctl_data->opcode,
+					ioctl_data->idn, index, 0, &att);
+		break;
+
+	case UPIU_QUERY_OPCODE_READ_FLAG:
+		switch (ioctl_data->idn) {
+		case QUERY_FLAG_IDN_FDEVICEINIT:
+		case QUERY_FLAG_IDN_PERMANENT_WPE:
+		case QUERY_FLAG_IDN_PWR_ON_WPE:
+		case QUERY_FLAG_IDN_BKOPS_EN:
+		case QUERY_FLAG_IDN_PURGE_ENABLE:
+		case QUERY_FLAG_IDN_FPHYRESOURCEREMOVAL:
+		case QUERY_FLAG_IDN_BUSY_RTC:
+			break;
+		default:
+			goto out_einval;
+		}
+		err = ufshcd_query_flag(hba, ioctl_data->opcode,
+					ioctl_data->idn, 0, &flag);
+		break;
+	default:
+		goto out_einval;
+	}
+
+	if (err) {
+		dev_err(hba->dev, "%s: Query for idn %d failed\n", __func__,
+			ioctl_data->idn);
+		goto out_release_mem;
+	}
+
+	/*
+	 * copy response data
+	 * As we might end up reading less data than what is specified in
+	 * "ioctl_data->buf_size". So we are updating "ioctl_data->
+	 * buf_size" to what exactly we have read.
+	 */
+	switch (ioctl_data->opcode) {
+	case UPIU_QUERY_OPCODE_READ_DESC:
+		ioctl_data->buf_size = min_t(int, ioctl_data->buf_size, length);
+		data_ptr = desc;
+		break;
+	case UPIU_QUERY_OPCODE_READ_ATTR:
+		ioctl_data->buf_size = sizeof(u32);
+		data_ptr = &att;
+		break;
+	case UPIU_QUERY_OPCODE_READ_FLAG:
+		ioctl_data->buf_size = 1;
+		data_ptr = &flag;
+		break;
+	case UPIU_QUERY_OPCODE_WRITE_ATTR:
+		goto out_release_mem;
+	default:
+		goto out_einval;
+	}
+
+	/* copy to user */
+	err = copy_to_user(buffer, ioctl_data,
+			   sizeof(struct ufs_ioctl_query_data));
+	if (err)
+		dev_err(hba->dev, "%s: Failed copying back to user.\n",
+			__func__);
+	err = copy_to_user(buffer + sizeof(struct ufs_ioctl_query_data),
+			   data_ptr, ioctl_data->buf_size);
+	if (err)
+		dev_err(hba->dev, "%s: err %d copying back to user.\n",
+			__func__, err);
+	goto out_release_mem;
+
+out_einval:
+	dev_err(hba->dev,
+		"%s: illegal ufs query ioctl data, opcode 0x%x, idn 0x%x\n",
+		__func__, ioctl_data->opcode, (unsigned int)ioctl_data->idn);
+	err = -EINVAL;
+out_release_mem:
+	kfree(ioctl_data);
+	kfree(desc);
+out:
+	return err;
+}
+
+
+static int
+ufs_qcom_ioctl(struct scsi_device *dev, unsigned int cmd, void __user *buffer)
+{
+	struct ufs_hba *hba = shost_priv(dev->host);
+	int err = 0;
+
+	BUG_ON(!hba);
+	if (!buffer) {
+		dev_err(hba->dev, "%s: User buffer is NULL!\n", __func__);
+		return -EINVAL;
+	}
+
+	switch (cmd) {
+	case UFS_IOCTL_QUERY:
+		ufshcd_rpm_get_sync(hba);
+		err = ufs_qcom_query_ioctl(hba,
+					   ufshcd_scsi_to_upiu_lun(dev->lun),
+					   buffer);
+		ufshcd_rpm_put_sync(hba);
+		break;
+	case UFS_IOCTL_MONITOR:
+		pm_runtime_get_sync(hba->dev);
+		err = ufs_ioctl_monitor(dev, buffer);
+		pm_runtime_put_sync(hba->dev);
+		break;
+        /*feature-memorymonitor-v001-2-end*/
+	default:
+		err = -ENOIOCTLCMD;
+		dev_err(hba->dev, "%s: Unsupported ioctl cmd %d\n", __func__,
+			cmd);
+		break;
+	}
+
+	return err;
+}
+
+
 static int tag_to_cpu(struct ufs_hba *hba, unsigned int tag)
 {
 	struct ufshcd_lrb *lrbp = &hba->lrb[tag];
@@ -2985,6 +3388,15 @@ static int ufs_qcom_setup_qos(struct ufs_hba *hba)
 		}
 		host->cpu_info[i].min_cpu_scale_freq = policy->cpuinfo.min_freq;
 		host->cpu_info[i].max_cpu_scale_freq = policy->cpuinfo.max_freq;
+		//cut down ufs driving boost cpufreq on 8650, T/G core to 2.7G, P core to 2.68G, S core to 2.03G
+		if (SOCINFO_8650 == socinfo_get_id()){
+			if (policy->cpu == 2 || policy->cpu == 5)
+				host->cpu_info[i].max_cpu_scale_freq = UFS_CPU_FREQ_MAX_GOLD_TITANIUM;
+			else if (policy->cpu == 7)
+				host->cpu_info[i].max_cpu_scale_freq = UFS_CPU_FREQ_MAX_PRIME;
+			else if (policy->cpu == 0)
+				host->cpu_info[i].max_cpu_scale_freq = UFS_CPU_FREQ_MAX_SILVER;
+		}
 		cpufreq_cpu_put(policy);
 	}
 
@@ -3157,6 +3569,9 @@ static void ufs_qcom_parse_irq_affinity(struct ufs_hba *hba)
 					UFS_QCOM_ESI_AFFINITY_MASK;
 		}
 	}
+	/* If device includes perf mask, enable dynamic irq affinity feature */
+	if (host->perf_mask.bits[0])
+		host->irq_affinity_support = true;
 }
 
 static void ufs_qcom_parse_pm_level(struct ufs_hba *hba)
@@ -3240,7 +3655,9 @@ static int ufs_qcom_set_cur_therm_state(struct thermal_cooling_device *tcd,
 		/* Stop setting hi-pri to requests and set irq affinity to default value */
 		atomic_set(&host->therm_mitigation, 1);
 		cancel_dwork_unvote_cpufreq(hba);
-		ufs_qcom_toggle_pri_affinity(hba, false);
+		if (host->irq_affinity_support)
+			ufs_qcom_toggle_pri_affinity(hba, false);
+
 		/* Set the default auto-hiberate idle timer to 1 ms */
 		ufshcd_auto_hibern8_update(hba, ufs_qcom_us_to_ahit(1000));
 
@@ -3472,6 +3889,259 @@ static void ufs_qcom_setup_max_hs_gear(struct ufs_qcom_host *host)
 	}
 }
 
+//#ifdef OPLUS_UFS_SIGNAL_QUALITY
+/*feature-flashaging806-v001-2-begin*/
+static void recordTimeStamp(
+	struct signal_quality *record,
+	enum ufs_event_type type
+) {
+	ktime_t cur_time = ktime_get();
+	switch (type)
+	{
+	case UFS_EVT_PA_ERR:
+	case UFS_EVT_DL_ERR:
+	case UFS_EVT_NL_ERR:
+	case UFS_EVT_TL_ERR:
+	case UFS_EVT_DME_ERR:
+		if (STAMP_RECORD_MAX <= record->stamp_pos)
+			return;
+		if (0 == record->stamp_pos)
+			record->stamp[0] = cur_time;
+		else if (cur_time > (record->stamp[record->stamp_pos - 1] +
+				STAMP_MIN_INTERVAL))
+			record->stamp[record->stamp_pos++] = cur_time;
+		return;
+	default:
+		return;
+	}
+}
+
+void recordUniproErr(
+	struct unipro_signal_quality_ctrl *signalCtrl,
+	u32 reg,
+	enum ufs_event_type type
+) {
+	unsigned long err_bits;
+	int ec;
+	struct signal_quality *rec = &signalCtrl->record;
+	recordTimeStamp(rec, type);
+	switch (type)
+	{
+	case UFS_EVT_FATAL_ERR:
+		if (DEVICE_FATAL_ERROR & reg)
+			rec->ufs_device_err_cnt++;
+		if (CONTROLLER_FATAL_ERROR & reg)
+			rec->ufs_host_err_cnt++;
+		if (SYSTEM_BUS_FATAL_ERROR & reg)
+			rec->ufs_bus_err_cnt++;
+		if (CRYPTO_ENGINE_FATAL_ERROR & reg)
+			rec->ufs_crypto_err_cnt++;
+		break;
+	case UFS_EVT_LINK_STARTUP_FAIL:
+		if (UIC_LINK_LOST & reg)
+			rec->ufs_link_lost_cnt++;
+		break;
+	case UFS_EVT_PA_ERR:
+		err_bits = reg & UIC_PHY_ADAPTER_LAYER_ERROR_CODE_MASK;
+		for_each_set_bit(ec, &err_bits, UNIPRO_PA_ERR_MAX) {
+			rec->unipro_PA_err_total_cnt++;
+			rec->unipro_PA_err_cnt[ec]++;
+		}
+		break;
+	case UFS_EVT_DL_ERR:
+		err_bits = reg & UIC_DATA_LINK_LAYER_ERROR_CODE_MASK;
+		for_each_set_bit(ec, &err_bits, UNIPRO_DL_ERR_MAX) {
+			rec->unipro_DL_err_total_cnt++;
+			rec->unipro_DL_err_cnt[ec]++;
+		}
+		break;
+	case UFS_EVT_NL_ERR:
+		err_bits = reg & UIC_NETWORK_LAYER_ERROR_CODE_MASK;
+		for_each_set_bit(ec, &err_bits, UNIPRO_NL_ERR_MAX) {
+			rec->unipro_NL_err_total_cnt++;
+			rec->unipro_NL_err_cnt[ec]++;
+		}
+		break;
+	case UFS_EVT_TL_ERR:
+		err_bits = reg & UIC_TRANSPORT_LAYER_ERROR_CODE_MASK;
+		for_each_set_bit(ec, &err_bits, UNIPRO_TL_ERR_MAX) {
+			rec->unipro_TL_err_total_cnt++;
+			rec->unipro_TL_err_cnt[ec]++;
+		}
+		break;
+	case UFS_EVT_DME_ERR:
+		err_bits = reg & UIC_DME_ERROR_CODE_MASK;
+		for_each_set_bit(ec, &err_bits, UNIPRO_DME_ERR_MAX) {
+			rec->unipro_DME_err_total_cnt++;
+			rec->unipro_DME_err_cnt[ec]++;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+#define SEQ_EASY_PRINT(x)   seq_printf(s, #x"\t%d\n", signalCtrl->record.x)
+#define SEQ_PA_PRINT(x)     \
+	seq_printf(s, #x"\t%d\n", signalCtrl->record.unipro_PA_err_cnt[x])
+#define SEQ_DL_PRINT(x)     \
+	seq_printf(s, #x"\t%d\n", signalCtrl->record.unipro_DL_err_cnt[x])
+#define SEQ_NL_PRINT(x)     \
+	seq_printf(s, #x"\t%d\n", signalCtrl->record.unipro_NL_err_cnt[x])
+#define SEQ_TL_PRINT(x)     \
+	seq_printf(s, #x"\t%d\n", signalCtrl->record.unipro_TL_err_cnt[x])
+#define SEQ_DME_PRINT(x)    \
+	seq_printf(s, #x"\t%d\n", signalCtrl->record.unipro_DME_err_cnt[x])
+#define SEQ_STAMP_PRINT(x)  \
+	seq_printf(s, #x"\t%d\n", signalCtrl->record.stamp[x])
+
+static int record_read_func(struct seq_file *s, void *v)
+{
+	struct unipro_signal_quality_ctrl *signalCtrl =
+		(struct unipro_signal_quality_ctrl *)(s->private);
+	if (!signalCtrl)
+		return -EINVAL;
+	SEQ_EASY_PRINT(ufs_device_err_cnt);
+	SEQ_EASY_PRINT(ufs_host_err_cnt);
+	SEQ_EASY_PRINT(ufs_bus_err_cnt);
+	SEQ_EASY_PRINT(ufs_crypto_err_cnt);
+	SEQ_EASY_PRINT(ufs_link_lost_cnt);
+	SEQ_EASY_PRINT(unipro_PA_err_total_cnt);
+	SEQ_PA_PRINT(UNIPRO_PA_LANE0_ERR_CNT);
+	SEQ_PA_PRINT(UNIPRO_PA_LANE1_ERR_CNT);
+	SEQ_PA_PRINT(UNIPRO_PA_LANE2_ERR_CNT);
+	SEQ_PA_PRINT(UNIPRO_PA_LANE3_ERR_CNT);
+	SEQ_PA_PRINT(UNIPRO_PA_LINE_RESET);
+	SEQ_EASY_PRINT(unipro_DL_err_total_cnt);
+	SEQ_DL_PRINT(UNIPRO_DL_NAC_RECEIVED);
+	SEQ_DL_PRINT(UNIPRO_DL_TCX_REPLAY_TIMER_EXPIRED);
+	SEQ_DL_PRINT(UNIPRO_DL_AFCX_REQUEST_TIMER_EXPIRED);
+	SEQ_DL_PRINT(UNIPRO_DL_FCX_PROTECTION_TIMER_EXPIRED);
+	SEQ_DL_PRINT(UNIPRO_DL_CRC_ERROR);
+	SEQ_DL_PRINT(UNIPRO_DL_RX_BUFFER_OVERFLOW);
+	SEQ_DL_PRINT(UNIPRO_DL_MAX_FRAME_LENGTH_EXCEEDED);
+	SEQ_DL_PRINT(UNIPRO_DL_WRONG_SEQUENCE_NUMBER);
+	SEQ_DL_PRINT(UNIPRO_DL_AFC_FRAME_SYNTAX_ERROR);
+	SEQ_DL_PRINT(UNIPRO_DL_NAC_FRAME_SYNTAX_ERROR);
+	SEQ_DL_PRINT(UNIPRO_DL_EOF_SYNTAX_ERROR);
+	SEQ_DL_PRINT(UNIPRO_DL_FRAME_SYNTAX_ERROR);
+	SEQ_DL_PRINT(UNIPRO_DL_BAD_CTRL_SYMBOL_TYPE);
+	SEQ_DL_PRINT(UNIPRO_DL_PA_INIT_ERROR);
+	SEQ_DL_PRINT(UNIPRO_DL_PA_ERROR_IND_RECEIVED);
+	SEQ_DL_PRINT(UNIPRO_DL_PA_INIT);
+	SEQ_EASY_PRINT(unipro_NL_err_total_cnt);
+	SEQ_NL_PRINT(UNIPRO_NL_UNSUPPORTED_HEADER_TYPE);
+	SEQ_NL_PRINT(UNIPRO_NL_BAD_DEVICEID_ENC);
+	SEQ_NL_PRINT(UNIPRO_NL_LHDR_TRAP_PACKET_DROPPING);
+	SEQ_EASY_PRINT(unipro_TL_err_total_cnt);
+	SEQ_TL_PRINT(UNIPRO_TL_UNSUPPORTED_HEADER_TYPE);
+	SEQ_TL_PRINT(UNIPRO_TL_UNKNOWN_CPORTID);
+	SEQ_TL_PRINT(UNIPRO_TL_NO_CONNECTION_RX);
+	SEQ_TL_PRINT(UNIPRO_TL_CONTROLLED_SEGMENT_DROPPING);
+	SEQ_TL_PRINT(UNIPRO_TL_BAD_TC);
+	SEQ_TL_PRINT(UNIPRO_TL_E2E_CREDIT_OVERFLOW);
+	SEQ_TL_PRINT(UNIPRO_TL_SAFETY_VALVE_DROPPING);
+	SEQ_EASY_PRINT(unipro_DME_err_total_cnt);
+	SEQ_DME_PRINT(UNIPRO_DME_GENERIC);
+	SEQ_DME_PRINT(UNIPRO_DME_TX_QOS);
+	SEQ_DME_PRINT(UNIPRO_DME_RX_QOS);
+	SEQ_DME_PRINT(UNIPRO_DME_PA_INIT_QOS);
+	SEQ_STAMP_PRINT(UNIPRO_0_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_1_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_2_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_3_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_4_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_5_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_6_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_7_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_8_STAMP);
+	SEQ_STAMP_PRINT(UNIPRO_9_STAMP);
+	return 0;
+}
+
+static inline void *PDE_DATA(const struct inode *inode)
+{
+  	return PDE(inode)->data;
+}
+
+static int record_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, record_read_func, PDE_DATA(inode));
+}
+
+static const struct proc_ops record_fops = {
+	.proc_open = record_open,
+	.proc_read = seq_read,
+	.proc_release = single_release,
+};
+
+#define SEQ_UPLOAD_PRINT(x) \
+	seq_printf(s, #x": %d\n", signalCtrl->record.x \
+		-signalCtrl->record_upload.x);\
+	signalCtrl->record_upload.x = signalCtrl->record.x;
+#define SEQ_UPLOAD_STAMP_PRINT(x) \
+	seq_printf(s, #x": %d\n", signalCtrl->record.stamp[x] \
+		-signalCtrl->record_upload.stamp[x]);\
+	signalCtrl->record_upload.stamp[x] = signalCtrl->record.stamp[x];
+static int record_upload_read_func(struct seq_file *s, void *v)
+{
+	struct unipro_signal_quality_ctrl *signalCtrl =
+		(struct unipro_signal_quality_ctrl *)(s->private);
+	if (!signalCtrl)
+		return -EINVAL;
+	SEQ_UPLOAD_PRINT(ufs_device_err_cnt);
+	SEQ_UPLOAD_PRINT(ufs_host_err_cnt);
+	SEQ_UPLOAD_PRINT(ufs_bus_err_cnt);
+	SEQ_UPLOAD_PRINT(ufs_crypto_err_cnt);
+	SEQ_UPLOAD_PRINT(ufs_link_lost_cnt);
+	SEQ_UPLOAD_PRINT(unipro_PA_err_total_cnt);
+	SEQ_UPLOAD_PRINT(unipro_DL_err_total_cnt);
+	SEQ_UPLOAD_PRINT(unipro_NL_err_total_cnt);
+	SEQ_UPLOAD_PRINT(unipro_TL_err_total_cnt);
+	SEQ_UPLOAD_PRINT(unipro_DME_err_total_cnt);
+	SEQ_UPLOAD_STAMP_PRINT(UNIPRO_0_STAMP);
+	return 0;
+}
+
+static int record_upload_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, record_upload_read_func, PDE_DATA(inode));
+}
+
+static const struct proc_ops record_upload_fops = {
+	.proc_open = record_upload_open,
+	.proc_read = seq_read,
+	.proc_release = single_release,
+};
+
+int create_signal_quality_proc(struct unipro_signal_quality_ctrl *signalCtrl)
+{
+	struct proc_dir_entry *d_entry;
+	signalCtrl->ctrl_dir = proc_mkdir("ufs_signalShow", NULL);
+	if (!signalCtrl->ctrl_dir)
+		return -ENOMEM;
+	d_entry = proc_create_data("record", S_IRUGO, signalCtrl->ctrl_dir,
+			&record_fops, signalCtrl);
+	if (!d_entry)
+		return -ENOMEM;
+	d_entry = proc_create_data("record_upload", S_IRUGO, signalCtrl->ctrl_dir,
+			&record_upload_fops, signalCtrl);
+	if (!d_entry)
+		return -ENOMEM;
+	return 0;
+}
+
+void remove_signal_quality_proc(struct unipro_signal_quality_ctrl *signalCtrl)
+{
+	if (signalCtrl->ctrl_dir) {
+		remove_proc_entry("record", signalCtrl->ctrl_dir);
+		remove_proc_entry("record_upload", signalCtrl->ctrl_dir);
+	}
+	return;
+}
+/*feature-flashaging806-v001-2-end*/
+//#endif /*OPLUS_UFS_SIGNAL_QUALITY*/
+
 static void ufs_qcom_register_minidump(uintptr_t vaddr, u64 size,
 					const char *buf_name, u64 id)
 {
@@ -3556,6 +4226,84 @@ static void ufs_qcom_parse_pbl_rst_workaround_flag(struct ufs_qcom_host *host)
 	host->bypass_pbl_rst_wa = of_property_read_bool(np, str);
 }
 
+/*
+ * ufs_qcom_parse_borken_ahit_workaround_flag - read broken-ahit-wa entry from DT
+ */
+static void ufs_qcom_parse_broken_ahit_workaround_flag(struct ufs_qcom_host *host)
+{
+	struct device_node *np = host->hba->dev->of_node;
+	const char *str = "qcom,broken-ahit-wa";
+
+	if (!np)
+		return;
+
+	host->broken_ahit_wa = of_property_read_bool(np, str);
+}
+
+/*
+ * Read sdam register for ufs device identification using
+ * nvmem interface and accordingly set phy submode.
+ */
+static void ufs_qcom_read_nvmem_cell(struct ufs_qcom_host *host)
+{
+	size_t len;
+	u8 *data;
+	struct nvmem_cell *nvmem_cell;
+	struct device_node *np = host->hba->dev->of_node;
+
+	nvmem_cell = nvmem_cell_get(host->hba->dev, "ufs_dev");
+	if (IS_ERR(nvmem_cell)) {
+		dev_err(host->hba->dev, "(%s) Failed to get nvmem cell\n", __func__);
+		return;
+	}
+
+	data = (u8 *)nvmem_cell_read(nvmem_cell, &len);
+	if (IS_ERR(data)) {
+		dev_err(host->hba->dev, "(%s) Failed to read from nvmem\n", __func__);
+		goto cell_put;
+	}
+
+	/*
+	 * data equal to zero shows that ufs 2.x card is connected while
+	 * non-zero value shows that ufs 3.x card is connected. Below are
+	 * the default values
+	 * sdam Value = 0 : UFS 2.x, phy_submode = 0.
+	 * sdam Value = 1 : UFS 3.x, phy_submode = 1.
+	 *
+	 * But also bit value to identify ufs device is not consistent
+	 * across the targets it could be bit[0] = 0/1 for UFS2.x/3x
+	 * and vice versa. If the bit[x] value is not same as default
+	 * value used in driver and if its reverted then use flag
+	 * qcom,ufs-dev-revert to identify ufs device.
+	 * Then revert values to get as below
+	 * data = 0 : UFS 2.x
+	 * data = 1 : UFS 3.x
+	 */
+	if (of_property_read_bool(np, "qcom,ufs-dev-revert"))
+		host->limit_phy_submode = !(*data);
+	else
+		host->limit_phy_submode = *data;
+
+	if (host->limit_phy_submode) {
+		dev_info(host->hba->dev, "(%s) UFS device is 3.x, phy_submode = %d\n",
+				__func__, host->limit_phy_submode);
+
+		if (of_property_read_bool(np, "limit-rate-ufs3")) {
+			host->limit_rate = PA_HS_MODE_A;
+			dev_dbg(host->hba->dev, "UFS 3.x device Mode is set to RATE A\n");
+		}
+	}
+
+	else
+		dev_info(host->hba->dev, "(%s) UFS device is 2.x, phy_submode = %d\n",
+				__func__, host->limit_phy_submode);
+
+	kfree(data);
+
+cell_put:
+	nvmem_cell_put(nvmem_cell);
+}
+
 /**
  * ufs_qcom_init - bind phy with controller
  * @hba: host controller instance
@@ -3587,6 +4335,8 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 #if defined(CONFIG_UFS_DBG)
 	host->dbg_en = true;
 #endif
+
+	ufs_qcom_enable_crash_on_err(hba);
 
 	/* Setup the optional reset control of HCI */
 	host->core_reset = devm_reset_control_get_optional(hba->dev, "rst");
@@ -3695,6 +4445,7 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	ufs_qcom_parse_wb(host);
 	ufs_qcom_parse_pbl_rst_workaround_flag(host);
+	ufs_qcom_parse_broken_ahit_workaround_flag(host);
 	ufs_qcom_set_caps(hba);
 	ufs_qcom_advertise_quirks(hba);
 
@@ -3730,6 +4481,17 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 				__func__, err);
 
 	ufs_qcom_init_sysfs(hba);
+	/*feature-flashaging806-v001-3-begin*/
+	create_signal_quality_proc(&signalCtrl);
+    /*feature-flashaging806-v001-3-end*/
+	/* Provide SCSI host ioctl API */
+	hba->host->hostt->ioctl = (int (*)(struct scsi_device *, unsigned int,
+				   void __user *))ufs_qcom_ioctl;
+#ifdef CONFIG_COMPAT
+	hba->host->hostt->compat_ioctl = (int (*)(struct scsi_device *,
+					  unsigned int,
+					  void __user *))ufs_qcom_ioctl;
+#endif
 
 	ut->tcd = devm_thermal_of_cooling_device_register(dev,
 							  dev->of_node,
@@ -4203,6 +4965,8 @@ static void ufs_qcom_event_notify(struct ufs_hba *hba,
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	struct phy *phy = host->generic_phy;
 	bool ber_th_exceeded = false;
+	u32 reg = *(u32 *)data;
+	recordUniproErr(&signalCtrl, reg, evt);
 
 	switch (evt) {
 	case UFS_EVT_PA_ERR:
@@ -4682,6 +5446,7 @@ static void ufs_qcom_parse_limits(struct ufs_qcom_host *host)
 	struct device_node *np = host->hba->dev->of_node;
 	u32 dev_major = 0, dev_minor = 0;
 	u32 val;
+	u32 ufs_dev_types = 0;
 
 	if (!np)
 		return;
@@ -4724,6 +5489,20 @@ static void ufs_qcom_parse_limits(struct ufs_qcom_host *host)
 	of_property_read_u32(np, "limit-rx-pwm-gear", &host->limit_rx_pwm_gear);
 	of_property_read_u32(np, "limit-rate", &host->limit_rate);
 	of_property_read_u32(np, "limit-phy-submode", &host->limit_phy_submode);
+
+	/*
+	 * ufs-dev-types and ufs_dev nvmem enties are for ufs device
+	 * identification using nvmem interface. Use number of
+	 * ufs devices supported in SoC for ufs-dev-types, and nvmem
+	 * handle added by pmic for sdam register access.
+	 *
+	 * Default value taken by driver is bit[x] = 1 for UFS 3.x and
+	 * bit[x] = 0 for UFS 2.x driver code takes this as default case.
+	 */
+	of_property_read_u32(np, "ufs-dev-types", &ufs_dev_types);
+
+	if (of_property_read_bool(np, "limit-rate-ufs3") || ufs_dev_types)
+		ufs_qcom_read_nvmem_cell(host);
 }
 
 /*
@@ -4822,7 +5601,8 @@ static struct ufs_dev_quirk ufs_qcom_dev_fixups[] = {
 	{ .wmanufacturerid = UFS_VENDOR_SAMSUNG,
 	  .model = UFS_ANY_MODEL,
 	  .quirk = UFS_DEVICE_QUIRK_PA_HIBER8TIME |
-			UFS_DEVICE_QUIRK_PA_TX_HSG1_SYNC_LENGTH},
+			UFS_DEVICE_QUIRK_PA_TX_HSG1_SYNC_LENGTH |
+			UFS_DEVICE_QUIRK_PA_TX_DEEMPHASIS_TUNING },
 	{ .wmanufacturerid = UFS_VENDOR_MICRON,
 	  .model = UFS_ANY_MODEL,
 	  .quirk = UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM },
@@ -5326,6 +6106,52 @@ static ssize_t ber_th_exceeded_show(struct device *dev,
 
 static DEVICE_ATTR_RO(ber_th_exceeded);
 
+static ssize_t irq_affinity_support_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	bool value;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	if (kstrtobool(buf, &value))
+		return -EINVAL;
+
+	/* if current irq_affinity_support is same as requested one, don't proceed */
+	if (value == host->irq_affinity_support)
+		goto out;
+
+	/* if perf-mask is not set, don't proceed */
+	if (!host->perf_mask.bits[0])
+		goto out;
+
+	host->irq_affinity_support = !!value;
+	/* Reset cpu affinity accordingly */
+	if (host->irq_affinity_support)
+		ufs_qcom_set_affinity_hint(hba, true);
+	else
+		ufs_qcom_set_affinity_hint(hba, false);
+
+	return count;
+
+out:
+	return -EINVAL;
+}
+
+static ssize_t irq_affinity_support_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", !!host->irq_affinity_support);
+}
+
+static DEVICE_ATTR_RW(irq_affinity_support);
+
 static struct attribute *ufs_qcom_sysfs_attrs[] = {
 	&dev_attr_err_state.attr,
 	&dev_attr_power_mode.attr,
@@ -5336,6 +6162,7 @@ static struct attribute *ufs_qcom_sysfs_attrs[] = {
 	&dev_attr_crash_on_err.attr,
 	&dev_attr_hibern8_count.attr,
 	&dev_attr_ber_th_exceeded.attr,
+	&dev_attr_irq_affinity_support.attr,
 	NULL
 };
 
@@ -5360,6 +6187,15 @@ static void ufs_qcom_hook_send_command(void *param, struct ufs_hba *hba,
 				       struct ufshcd_lrb *lrbp)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	unsigned long flags;
+
+	if (!host->disable_lpm && host->broken_ahit_wa) {
+		spin_lock_irqsave(hba->host->host_lock, flags);
+		if ((++host->active_cmds) == 1)
+			/* Stop the auto-hiberate idle timer */
+			ufshcd_writel(hba, 0, REG_AUTO_HIBERNATE_IDLE_TIMER);
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+	}
 
 	if (lrbp && lrbp->cmd && lrbp->cmd->cmnd[0]) {
 		struct request *rq = scsi_cmd_to_rq(lrbp->cmd);
@@ -5388,7 +6224,7 @@ static void ufs_qcom_hook_send_command(void *param, struct ufs_hba *hba,
 			/* The dev cmd would not be logged in MCQ mode provisionally */
 			u32 utag = (rq->mq_hctx->queue_num << BLK_MQ_UNIQUE_TAG_BITS) |
 						(rq->tag & BLK_MQ_UNIQUE_TAG_MASK);
-			u32 idx = blk_mq_unique_tag_to_hwq(utag) + 1;
+			u32 idx = blk_mq_unique_tag_to_hwq(utag);
 			struct ufs_hw_queue *hwq = &hba->uhq[idx];
 
 			ufs_qcom_log_str(host, "<,%x,%d,%d,%d\n",
@@ -5411,6 +6247,16 @@ static void ufs_qcom_hook_compl_command(void *param, struct ufs_hba *hba,
 {
 
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	unsigned long flags;
+
+	if (!host->disable_lpm && host->broken_ahit_wa) {
+		spin_lock_irqsave(hba->host->host_lock, flags);
+		if ((--host->active_cmds) == 0)
+			/* Activate the auto-hiberate idle timer */
+			ufshcd_writel(hba, hba->ahit,
+				      REG_AUTO_HIBERNATE_IDLE_TIMER);
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+	}
 
 	if (lrbp && lrbp->cmd) {
 		struct request *rq = scsi_cmd_to_rq(lrbp->cmd);
@@ -5430,6 +6276,10 @@ static void ufs_qcom_hook_compl_command(void *param, struct ufs_hba *hba,
 						ufshcd_readl(hba,
 							REG_UTP_TRANSFER_REQ_DOOR_BELL),
 						sz);
+
+			if ((host->irq_affinity_support) && atomic_read(&host->hi_pri_en) && rq)
+				rq->cmd_flags |= REQ_POLLED;
+
 			return;
 		}
 
@@ -5437,7 +6287,7 @@ static void ufs_qcom_hook_compl_command(void *param, struct ufs_hba *hba,
 			/* The dev cmd would not be logged in MCQ mode provisionally */
 			u32 utag = (rq->mq_hctx->queue_num << BLK_MQ_UNIQUE_TAG_BITS) |
 						(rq->tag & BLK_MQ_UNIQUE_TAG_MASK);
-			u32 idx = blk_mq_unique_tag_to_hwq(utag) + 1;
+			u32 idx = blk_mq_unique_tag_to_hwq(utag);
 			struct ufs_hw_queue *hwq = &hba->uhq[idx];
 
 			ufs_qcom_log_str(host, ">,%x,%d,%d,%d\n",
@@ -5506,11 +6356,72 @@ static void ufs_qcom_hook_check_int_errors(void *param, struct ufs_hba *hba,
 	}
 }
 
+#ifdef CONFIG_SCSI_UFS_HPB
+static bool is_ufshpb_allowed(struct ufs_hba *hba)
+{
+	return !(hba->ufshpb_dev.hpb_disabled);
+}
+#else
+static bool is_ufshpb_allowed(struct ufs_hba *hba)
+{
+	pr_warn("ufshpb macro definition is not opened\n");
+	return false;
+}
+#endif
+//bsp.storage.ufs 2021.10.14 add for /proc/devinfo/ufs
+/*feature-devinfo-v001-5-begin*/
+static int create_devinfo_ufs(struct scsi_device *sdev)
+{
+	static char temp_version[5] = {0};
+	static char vendor[9] = {0};
+	static char model[17] = {0};
+	int ret = 0;
+	struct ufs_hba *hba = NULL;
+
+	pr_info("get ufs device vendor/model/rev\n");
+	WARN_ON(!sdev);
+	strncpy(temp_version, sdev->rev, 4);
+	strncpy(vendor, sdev->vendor, 8);
+	strncpy(model, sdev->model, 16);
+
+	ret = register_device_proc("ufs_version", temp_version, vendor);
+
+	if (ret) {
+		pr_err("%s create ufs_version fail, ret=%d",__func__,ret);
+		return ret;
+	}
+
+	ret = register_device_proc("ufs", model, vendor);
+
+	if (ret) {
+		pr_err("%s create ufs fail, ret=%d",__func__,ret);
+	}
+
+	hba = shost_priv(sdev->host);
+	if (hba && ufshcd_is_wb_allowed(hba)) {
+		ufsplus_wb_status = 1;
+	}
+	if (hba && is_ufshpb_allowed(hba)) {
+		ufsplus_hpb_status = 1;
+	}
+	ret = register_device_proc_for_ufsplus("ufsplus_status", &ufsplus_hpb_status, &ufsplus_wb_status);
+	if (ret) {
+		pr_err("%s create , ret=%d",__func__,ret);
+	}
+
+	return ret;
+}
+
+
 static void ufs_qcom_update_sdev(void *param, struct scsi_device *sdev)
 {
 	sdev->broken_fua = 1;
-}
 
+	if (strcmp(sdev->model,ufs_null_device_strs) && atomic_inc_return(&ufs_init_done)==1){
+		create_devinfo_ufs(sdev);
+	}
+}
+/*feature-devinfo-v001-5-end*/
 /*
  * Refer: common/include/trace/hooks/ufshcd.h for available hooks
  */
@@ -5633,6 +6544,7 @@ static int ufs_qcom_probe(struct platform_device *pdev)
 	err = ufs_cpufreq_status();
 	if (err)
 		return err;
+        atomic_set(&ufs_init_done,0);
 
 	/*
 	 *Defer secondary UFS device probe if all the LUNS of
@@ -5681,6 +6593,10 @@ static int ufs_qcom_remove(struct platform_device *pdev)
 	for (i = 0; i < r->num_groups; i++, qcg++)
 		remove_group_qos(qcg);
 
+	/*feature-flashaging806-v001-6-begin*/
+	remove_signal_quality_proc(&signalCtrl);
+    /*feature-flashaging806-v001-6-end*/
+
 	if (msm_minidump_enabled())
 		atomic_notifier_chain_unregister(&panic_notifier_list,
 				&host->ufs_qcom_panic_nb);
@@ -5688,6 +6604,28 @@ static int ufs_qcom_remove(struct platform_device *pdev)
 	ufshcd_remove(hba);
 	platform_msi_domain_free_irqs(hba->dev);
 	return 0;
+}
+
+/**
+ * ufs_qcom_enable_vccq_shutdown - read from DTS whether vccq_shutdown
+ * should be enabled for putting additional vote on VCCQ LDO during shutdown.
+ * @hba: per adapter instance
+ */
+
+static void ufs_qcom_enable_vccq_shutdown(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	int err;
+
+	err = ufs_qcom_parse_reg_info(host, "qcom,vccq-shutdown",
+			&host->vccq_shutdown);
+
+	if (host->vccq_shutdown) {
+		err = ufs_qcom_enable_vreg(hba->dev, host->vccq_shutdown);
+		if (err)
+			dev_err(hba->dev, "%s: failed enable vccq_shutdown err=%d\n",
+						__func__, err);
+	}
 }
 
 static void ufs_qcom_shutdown(struct platform_device *pdev)
@@ -5706,6 +6644,10 @@ static void ufs_qcom_shutdown(struct platform_device *pdev)
 	ufs_qcom_log_str(host, "0xdead\n");
 	if (host->dbg_en)
 		trace_ufs_qcom_shutdown(dev_name(hba->dev));
+
+	/* put an additional vote on UFS VCCQ LDO if required */
+	ufs_qcom_enable_vccq_shutdown(hba);
+
 	ufshcd_pltfrm_shutdown(pdev);
 
 	/* UFS_RESET TLMM register cannot reset to POR value '1' after warm

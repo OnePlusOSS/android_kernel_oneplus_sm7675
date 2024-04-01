@@ -84,7 +84,8 @@ config QTI_POLICY_ENGINE_SENSOR
 
 config QTI_QMI_COOLING_DEVICE
 	tristate "QTI QMI cooling devices"
-	depends on QCOM_QMI_HELPERS && THERMAL
+	depends on THERMAL
+	select QCOM_QMI_HELPERS
 	help
 	   This enables the QTI remote subsystem cooling devices. These cooling
 	   devices will be used by QTI chipset to place various remote
@@ -225,6 +226,15 @@ config QTI_CX_IPEAK_COOLING_DEVICE
 	  thermal client set their vote, CXIP LM hardware throttles the clients
 	  on the CX rail.
 
+config QTI_QMI_SENSOR
+	tristate "QTI QMI sensor driver"
+	depends on QCOM_QMI_HELPERS && THERMAL
+	help
+	   This enables to list the QTI remote subsystem temperature sensors.
+	   This driver can read the temperature of the remote sensor.
+	   These sensors can take thresholds and notify the thermal
+	   framework when the threshold is reached.
+
 config QTI_RPM_SMD_COOLING_DEVICE
 	tristate "Qualcomm Technologies Inc. RPM SMD cooling device driver"
 	depends on MSM_RPM_SMD && THERMAL_OF
@@ -233,3 +243,32 @@ config QTI_RPM_SMD_COOLING_DEVICE
 	  level to RPM hardware via SMD protocol. This mitigation device
 	  will be used by temperature reliability rules to restrict a
 	  railway at predefined voltage corner using RPM hardware.
+
+config REGULATOR_COOLING_DEVICE
+	tristate "Regulator voltage floor cooling device"
+	depends on REGULATOR && THERMAL_OF
+	help
+	  This implements a mitigation device to place a minimum voltage floor
+	  on a particular regulator. This mitigation device will be used by low
+	  temperature reliability rules to mitigate a regulator at nominal
+	  voltage.
+
+config QTI_DEVFREQ_VDD_COOLING_DEVICE
+	tristate "Devfreq voltage floor cooling device"
+	depends on PM_DEVFREQ && PM_OPP && THERMAL_OF
+	help
+	  This implements a mitigation device to place a minimum frequency floor
+	  on a particular devfreq device. This mitigation device will be used by
+	  low temperature reliability rules to mitigate a devfreq device at
+	  minimum operating level.
+
+config QTI_GPU_DUMP_SKIP_COOLING_DEVICE
+	tristate "QTI GPU Dump Skip Cooling device"
+	depends on THERMAL
+	help
+	  This enables the QTI GPU Dump Skip cooling device. This driver will
+	  register with thermal framework as a cooling device. This will enable
+	  the feature to update a PMIC SDAM and a SOC cookie which will be checked in
+	  SDI path to disable GFX rail and skip GPU Scan dump when ambient temperature
+	  is more than the recommended threshold.
+

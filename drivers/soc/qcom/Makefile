@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
+CFLAGS_fsa4480-i2c.o += -I$(srctree)/drivers/usb/typec/tcpc/inc \
+			-I$(srctree)/drivers/power/oplus/v2/include
+CFLAGS_wcd939x-i2c.o += -I$(srctree)/drivers/power/oplus/v2/include
 CFLAGS_rpmh-rsc.o := -I$(src)
 obj-$(CONFIG_QCOM_AOSS_QMP) +=	qcom_aoss.o
 obj-$(CONFIG_QCOM_GENI_SE) +=	qcom-geni-se.o
@@ -65,6 +68,7 @@ crypto-qti-$(CONFIG_QTI_HW_KEY_MANAGER) += crypto-qti-hwkm.o
 obj-$(CONFIG_QTI_HW_KEY_MANAGER) += hwkm.o
 crypto-qti-$(CONFIG_QTI_HW_KEY_MANAGER_V1) += crypto-qti-hwkm.o
 obj-$(CONFIG_QTI_HW_KEY_MANAGER_V1) += hwkm_v1.o
+obj-$(CONFIG_QTI_CRYPTO_VIRTUALIZATION) += crypto-qti-virt.o
 obj-$(CONFIG_MSM_TMECOM_QMP) += tmecom/
 obj-$(CONFIG_MSM_HAB) += hab/
 obj-$(CONFIG_QCOM_HGSL) += hgsl/
@@ -94,6 +98,7 @@ obj-$(CONFIG_QTI_PLH_SCMI_CLIENT) += plh_scmi.o
 obj-$(CONFIG_QCOM_WCD_USBSS_I2C) += wcd_usbss_i2c.o
 obj-$(CONFIG_QCOM_SYSMON_SUBSYSTEM_STATS) += sysmon_subsystem_stats.o
 obj-$(CONFIG_QCOM_CDSP_RM) += cdsprm.o
+obj-$(CONFIG_QCOM_FSA4480_I2C) += fsa4480-i2c.o
 wcd_usbss_i2c-y	+= wcd-usbss-regmap.o
 wcd_usbss_i2c-y += wcd-usbss-tables.o
 wcd_usbss_i2c-y += wcd-usbss-utils.o

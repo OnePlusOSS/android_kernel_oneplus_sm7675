@@ -442,6 +442,11 @@ static void qrtr_gunyah_read(struct qrtr_gunyah_dev *qdev)
 {
 	unsigned long flags;
 
+	if (!qdev) {
+		pr_err("%s: Invalid data.\n", __func__);
+		return;
+	}
+
 	spin_lock_irqsave(&qdev->dbl_lock, flags);
 	wake_up_all(&qdev->tx_avail_notify);
 
@@ -496,7 +501,7 @@ static int qrtr_gunyah_share_mem(struct qrtr_gunyah_dev *qdev, gh_vmid_t self,
 	sgl->sgl_entries[0].ipa_base = qdev->res.start;
 	sgl->sgl_entries[0].size = resource_size(&qdev->res);
 
-	ret = ghd_rm_mem_share(GH_RM_MEM_TYPE_NORMAL, 0, qdev->label,
+	ret = ghd_rm_mem_share(GH_RM_MEM_TYPE_NORMAL, GH_RM_MEM_SHARE_SANITIZE, qdev->label,
 			       acl, sgl, NULL, &qdev->memparcel);
 	if (ret) {
 		pr_err("%s: gh_rm_mem_share failed addr=%x size=%u err=%d\n",
@@ -517,7 +522,7 @@ static int qrtr_gunyah_share_mem(struct qrtr_gunyah_dev *qdev, gh_vmid_t self,
 static void qrtr_gunyah_unshare_mem(struct qrtr_gunyah_dev *qdev,
 				    gh_vmid_t self, gh_vmid_t peer)
 {
-	u64 src_vmlist = BIT(self);
+	u64 src_vmlist = BIT(self) | BIT(peer);
 	struct qcom_scm_vmperm dst_vmlist[1] = {{self, PERM_READ | PERM_WRITE | PERM_EXEC}};
 	int ret;
 
@@ -593,9 +598,6 @@ static int qrtr_gunyah_vm_cb(struct notifier_block *nb, unsigned long cmd, void 
 static void qrtr_gunyah_fifo_init(struct qrtr_gunyah_dev *qdev)
 {
 	__le32 *descs;
-
-	if (qdev->master)
-		memset(qdev->base, 0, sizeof(*descs) * 10);
 
 	descs = qdev->base;
 	descs[GUNYAH_MAGIC_IDX] = GUNYAH_MAGIC_KEY;

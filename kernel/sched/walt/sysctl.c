@@ -20,7 +20,9 @@ static int one_hundred = 100;
 static int one_thousand = 1000;
 static int one_thousand_twenty_four = 1024;
 static int two_thousand = 2000;
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
 static int walt_max_cpus = WALT_NR_CPUS;
+#endif
 
 /*
  * CFS task prio range is [100 ... 139]
@@ -85,13 +87,119 @@ unsigned int sysctl_sched_heavy_nr;
 unsigned int sysctl_max_freq_partial_halt = FREQ_QOS_MAX_DEFAULT_VALUE;
 unsigned int sysctl_fmax_cap[MAX_CLUSTERS];
 unsigned int sysctl_sched_sbt_pause_cpus;
+unsigned int sysctl_sched_sbt_enable = 1;
 unsigned int sysctl_sched_sbt_delay_windows;
 unsigned int high_perf_cluster_freq_cap[MAX_CLUSTERS];
 unsigned int sysctl_sched_pipeline_cpus;
 unsigned int fmax_cap[MAX_FREQ_CAP][MAX_CLUSTERS];
+EXPORT_SYMBOL(fmax_cap);
+
+/* Entries for 4 clusters and 10 tuples(3 item in each tuple */
+unsigned int sysctl_cluster_arr[4][MAX_FREQ_RELATIONS * TUPLE_SIZE] = {
+					[0] = {0, 0, 0},
+					[1] = {0, 0, 0},
+					[2] = {0, 0, 0},
+					[3] = {0, 0, 0},
+};
+struct freq_relation_map relation_data[MAX_CLUSTERS][MAX_FREQ_RELATIONS];
 
 /* range is [1 .. INT_MAX] */
 static int sysctl_task_read_pid = 1;
+
+static int sched_freq_map_handler(struct ctl_table *table, int write,
+					       void __user *buffer, size_t *lenp,
+					       loff_t *ppos)
+{
+	int i, idx = 0, ret = -EPERM;
+	unsigned int *data = (unsigned int *)table->data;
+	static DEFINE_MUTEX(ignore_cluster_mutex);
+	static int configured[MAX_CLUSTERS] = {0};
+	int index;
+	unsigned int val[MAX_FREQ_RELATIONS * TUPLE_SIZE];
+	unsigned int src_cluster_fmax;
+	unsigned int cluster_freq[MAX_CLUSTERS] = {0};
+	struct ctl_table tmp = {
+		.data	= &val,
+		.maxlen	= sizeof(unsigned int) * MAX_FREQ_RELATIONS * TUPLE_SIZE,
+		.mode	= table->mode,
+	};
+
+	if (num_sched_clusters <= 1)
+		return ret;
+
+	index = (data == sysctl_cluster_arr[0]) ? 0 : (data == sysctl_cluster_arr[1]) ?
+				1 : (data == sysctl_cluster_arr[2]) ? 2 : 3;
+
+	/* we are not allowing prime to have any relations for now */
+	if (index >= num_sched_clusters - 1)
+		return ret;
+
+	mutex_lock(&ignore_cluster_mutex);
+	if (!write) {
+		ret = proc_dointvec(table, write, buffer, lenp, ppos);
+		goto unlock;
+	}
+
+	/* updation allowed only once */
+	if (configured[index])
+		goto unlock;
+
+	ret = proc_dointvec(&tmp, write, buffer, lenp, ppos);
+	if (ret)
+		goto unlock;
+
+	src_cluster_fmax = sched_cluster[index]->max_possible_freq;
+	configured[index]  = 1;
+	/*
+	 * tuple format:
+	 * <a b c>:
+	 *	a : source cluster frequency
+	 *	b : first cpu of target cluster
+	 *	c : target cluster frequency
+	 */
+	for (i = 0; i < MAX_FREQ_RELATIONS; i++) {
+		int tgt_cluster_id;
+
+		idx = i * 3;
+
+		if ((val[idx + 0] == 0) || (val[idx + 1] >= cpumask_weight(cpu_possible_mask)) ||
+			(val[idx + 2] == 0))
+			break;
+
+		tgt_cluster_id = cpu_cluster(val[idx + 1])->id;
+
+		/* target cpu cannot be of same/lower cluster */
+		if (tgt_cluster_id <= index)
+			break;
+
+		/* frequency should be always same or increasing */
+		if (cluster_freq[index] > val[idx + 0])
+			break;
+		cluster_freq[index] = val[idx + 0];
+
+		if (cluster_freq[tgt_cluster_id] >= val[idx + 2])
+			break;
+		cluster_freq[tgt_cluster_id] = val[idx + 2];
+
+
+		relation_data[index][i].src_freq = data[idx + 0] = val[idx + 0];
+		relation_data[index][i].target_cluster_cpu = data[idx + 1] = val[idx + 1];
+		relation_data[index][i].tgt_freq = data[idx + 2] = val[idx + 2];
+	}
+
+	for (; i < MAX_FREQ_RELATIONS; i++) {
+		idx = i * 3;
+		relation_data[index][i].src_freq = data[idx + 0] = FREQ_QOS_MAX_DEFAULT_VALUE;
+		relation_data[index][i].target_cluster_cpu = data[idx + 1] = -1;
+		relation_data[index][i].tgt_freq = data[idx + 2] = FREQ_QOS_MAX_DEFAULT_VALUE;
+	}
+
+	update_freq_relation(sched_cluster[index]);
+
+unlock:
+	mutex_unlock(&ignore_cluster_mutex);
+	return ret;
+}
 
 static int walt_proc_group_thresholds_handler(struct ctl_table *table, int write,
 				       void __user *buffer, size_t *lenp,
@@ -1176,6 +1284,7 @@ struct ctl_table walt_table[] = {
 		.mode		= 0644,
 		.proc_handler	= sched_task_handler,
 	},
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
 	{
 		.procname	= "sched_pipeline",
 		.data		= (int *) PIPELINE,
@@ -1183,6 +1292,7 @@ struct ctl_table walt_table[] = {
 		.mode		= 0644,
 		.proc_handler	= sched_task_handler,
 	},
+#endif
 	{
 		.procname	= "task_load_boost",
 		.data		= (int *) LOAD_BOOST,
@@ -1296,6 +1406,7 @@ struct ctl_table walt_table[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= &one_thousand_twenty_four,
 	},
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
 	{
 		.procname	= "sched_heavy_nr",
 		.data		= &sysctl_sched_heavy_nr,
@@ -1304,6 +1415,26 @@ struct ctl_table walt_table[] = {
 		.proc_handler	= proc_douintvec_minmax,
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= &walt_max_cpus,
+	},
+#else
+	{
+		.procname	= "enable_pipeline_boost",
+		.data		= &enable_pipeline_boost,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0664,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif
+	{
+		.procname	= "sched_sbt_enable",
+		.data		= &sysctl_sched_sbt_enable,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
 	},
 	{
 		.procname	= "sched_sbt_pause_cpus",
@@ -1354,6 +1485,34 @@ struct ctl_table walt_table[] = {
 		.maxlen		= sizeof(unsigned int) * MAX_CLUSTERS,
 		.mode		= 0644,
 		.proc_handler	= sched_fmax_cap_handler,
+	},
+	{
+		.procname	= "sched_cluster0_freq_map",
+		.data		= sysctl_cluster_arr[0],
+		.maxlen		= sizeof(int) * MAX_FREQ_RELATIONS * TUPLE_SIZE,
+		.mode		= 0644,
+		.proc_handler	= sched_freq_map_handler,
+	},
+	{
+		.procname	= "sched_cluster1_freq_map",
+		.data		= sysctl_cluster_arr[1],
+		.maxlen		= sizeof(int) * MAX_FREQ_RELATIONS * TUPLE_SIZE,
+		.mode		= 0644,
+		.proc_handler	= sched_freq_map_handler,
+	},
+	{
+		.procname	= "sched_cluster2_freq_map",
+		.data		= sysctl_cluster_arr[2],
+		.maxlen		= sizeof(int) * MAX_FREQ_RELATIONS * TUPLE_SIZE,
+		.mode		= 0644,
+		.proc_handler	= sched_freq_map_handler,
+	},
+	{
+		.procname	= "sched_cluster3_freq_map",
+		.data		= sysctl_cluster_arr[3],
+		.maxlen		= sizeof(int) * MAX_FREQ_RELATIONS * TUPLE_SIZE,
+		.mode		= 0644,
+		.proc_handler	= sched_freq_map_handler,
 	},
 	{ }
 };
@@ -1420,5 +1579,13 @@ void walt_tunables(void)
 	for (i = 0; i < MAX_FREQ_CAP; i++) {
 		for (j = 0; j < MAX_CLUSTERS; j++)
 			fmax_cap[i][j] = FREQ_QOS_MAX_DEFAULT_VALUE;
+	}
+
+	for (i = 0; i < MAX_CLUSTERS; i++) {
+		for (j = 0; j < MAX_FREQ_RELATIONS; j++) {
+			relation_data[i][j].src_freq = relation_data[i][j].tgt_freq =
+									FREQ_QOS_MAX_DEFAULT_VALUE;
+			relation_data[i][j].target_cluster_cpu = -1;
+		}
 	}
 }

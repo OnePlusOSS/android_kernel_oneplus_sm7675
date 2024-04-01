@@ -28,6 +28,7 @@ load(":msm_common.bzl", "define_top_level_config", "gen_config_without_source_li
 load(":msm_dtc.bzl", "define_dtc_dist")
 load(":msm_abl.bzl", "define_abl_dist")
 load(":avb_boot_img.bzl", "avb_sign_boot_image")
+load(":dpm_image.bzl", "define_dpm_image")
 load(":image_opts.bzl", "boot_image_opts")
 load(":target_variants.bzl", "la_variants")
 load(":modules.bzl", "COMMON_GKI_MODULES_LIST")
@@ -195,7 +196,8 @@ def _define_image_build(
         dtbo_list = [],
         vendor_ramdisk_binaries = None,
         gki_ramdisk_prebuilt_binary = None,
-        in_tree_module_list = []):
+        in_tree_module_list = [],
+        dpm_overlay = False):
     """Creates a `kernel_images` target which will generate bootable device images
 
     Args:
@@ -273,6 +275,9 @@ def _define_image_build(
         boot_partition_size = int(boot_image_opts.boot_partition_size),
     )
 
+    if dpm_overlay:
+        define_dpm_image(target)
+
     native.filegroup(
         name = "{}_system_dlkm_image_file".format(target),
         srcs = ["{}_images".format(base_kernel)],
@@ -303,7 +308,8 @@ def _define_kernel_dist(
         variant,
         base_kernel,
         define_abi_targets,
-        boot_image_opts = boot_image_opts()):
+        boot_image_opts = boot_image_opts(),
+        dpm_overlay = False):
     """Creates distribution targets for kernel builds
 
     When Bazel builds everything, the outputs end up buried in `bazel-bin`.
@@ -325,6 +331,16 @@ def _define_kernel_dist(
     if define_abi_targets:
         msm_dist_targets.append("{}_gki_artifacts".format(base_kernel))
 
+    native.genrule(
+        name = "{}_system_dlkm_module_blocklist".format(target),
+        srcs = ["modules.systemdlkm_blocklist.msm.{}".format(msm_target)],
+        outs = ["{}/system_dlkm.modules.blocklist".format(target)],
+        cmd = """
+          mkdir -p "$$(dirname "$@")"
+          sed -e '/^#/d' -e '/^$$/d' $(SRCS) > "$@"
+        """,
+    )
+
     msm_dist_targets.extend([
         # do not sort
         "{}_images_system_dlkm_image".format(base_kernel),
@@ -335,9 +351,13 @@ def _define_kernel_dist(
         ":{}_unsparsed_image".format(target),
         ":{}_merged_kernel_uapi_headers".format(target),
         ":{}_build_config".format(target),
+        ":{}_system_dlkm_module_blocklist".format(target),
     ])
 
     msm_dist_targets.append("{}_avb_sign_boot_image".format(target))
+
+    if dpm_overlay:
+        msm_dist_targets.append(":{}_dpm_image".format(target))
 
     board_cmdline_extras = " ".join(boot_image_opts.board_kernel_cmdline_extras)
     if board_cmdline_extras:
@@ -404,6 +424,7 @@ def define_msm_la(
         variant,
         in_tree_module_list,
         kmi_enforced = True,
+        dpm_overlay = False,
         boot_image_opts = boot_image_opts()):
     """Top-level kernel build definition macro for an MSM platform
 
@@ -412,6 +433,7 @@ def define_msm_la(
       variant: variant of kernel to build (e.g. "gki")
       in_tree_module_list: list of in-tree modules
       kmi_enforced: boolean determining if the KMI contract should be enforced
+      dpm_overlay: boolean determining if a `dpm.img` should be generated
       boot_image_header_version: boot image header version (for `boot.img`)
       base_address: edk2 base address
       page_size: kernel page size
@@ -439,6 +461,10 @@ def define_msm_la(
     vendor_ramdisk_binaries = get_vendor_ramdisk_binaries(target)
     gki_ramdisk_prebuilt_binary = get_gki_ramdisk_prebuilt_binary()
     build_config_fragments = get_build_config_fragments(msm_target)
+
+    # Can't enable dpm_overlay if no overlays are listed
+    if len(dtbo_list) == 0 and dpm_overlay:
+        dpm_overlay = False
 
     _define_build_config(
         msm_target,
@@ -475,6 +501,7 @@ def define_msm_la(
         boot_image_opts = boot_image_opts,
         boot_image_outs = None if dtb_list else ["boot.img", "init_boot.img"],
         in_tree_module_list = in_tree_module_list,
+        dpm_overlay = dpm_overlay,
     )
 
     _define_kernel_dist(
@@ -484,6 +511,7 @@ def define_msm_la(
         base_kernel,
         define_abi_targets,
         boot_image_opts = boot_image_opts,
+        dpm_overlay = dpm_overlay,
     )
 
     _define_uapi_library(target)

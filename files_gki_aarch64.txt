@@ -18,6 +18,10 @@ arch/arm64/crypto/sha256-glue.c
 arch/arm64/crypto/sha512-ce-core.S
 arch/arm64/crypto/sha512-ce-glue.c
 arch/arm64/crypto/sha512-glue.c
+arch/arm64/geniezone/gzvm_arch_common.h
+arch/arm64/geniezone/vcpu.c
+arch/arm64/geniezone/vgic.c
+arch/arm64/geniezone/vm.c
 arch/arm64/gunyah/gunyah_hypercall.c
 arch/arm64/include/asm/acpi.h
 arch/arm64/include/asm/alternative-macros.h
@@ -481,6 +485,7 @@ block/blk-flush.c
 block/blk-ia-ranges.c
 block/blk-ioc.c
 block/blk-iocost.c
+block/blk-ioprio.c
 block/blk-ioprio.h
 block/blk-lib.c
 block/blk-map.c
@@ -1222,6 +1227,7 @@ drivers/media/usb/uvc/uvc_status.c
 drivers/media/usb/uvc/uvc_v4l2.c
 drivers/media/usb/uvc/uvc_video.c
 drivers/media/usb/uvc/uvcvideo.h
+drivers/media/v4l2-core/v4l2-async.c
 drivers/media/v4l2-core/v4l2-common.c
 drivers/media/v4l2-core/v4l2-compat-ioctl32.c
 drivers/media/v4l2-core/v4l2-ctrls-api.c
@@ -1234,6 +1240,7 @@ drivers/media/v4l2-core/v4l2-device.c
 drivers/media/v4l2-core/v4l2-dv-timings.c
 drivers/media/v4l2-core/v4l2-event.c
 drivers/media/v4l2-core/v4l2-fh.c
+drivers/media/v4l2-core/v4l2-fwnode.c
 drivers/media/v4l2-core/v4l2-i2c.c
 drivers/media/v4l2-core/v4l2-ioctl.c
 drivers/media/v4l2-core/v4l2-mc.c
@@ -1874,6 +1881,14 @@ drivers/video/hdmi.c
 drivers/video/of_display_timing.c
 drivers/video/of_videomode.c
 drivers/video/videomode.c
+drivers/virt/geniezone/gzvm_common.h
+drivers/virt/geniezone/gzvm_exception.c
+drivers/virt/geniezone/gzvm_ioeventfd.c
+drivers/virt/geniezone/gzvm_irqfd.c
+drivers/virt/geniezone/gzvm_main.c
+drivers/virt/geniezone/gzvm_mmu.c
+drivers/virt/geniezone/gzvm_vcpu.c
+drivers/virt/geniezone/gzvm_vm.c
 drivers/virt/gunyah/gunyah_ioeventfd.c
 drivers/virt/gunyah/gunyah_irqfd.c
 drivers/virt/gunyah/gunyah_platform_hooks.c
@@ -1939,12 +1954,10 @@ fs/erofs/namei.c
 fs/erofs/pcpubuf.c
 fs/erofs/super.c
 fs/erofs/sysfs.c
-fs/erofs/tagptr.h
 fs/erofs/utils.c
 fs/erofs/xattr.c
 fs/erofs/xattr.h
 fs/erofs/zdata.c
-fs/erofs/zdata.h
 fs/erofs/zmap.c
 fs/eventfd.c
 fs/eventpoll.c
@@ -2261,6 +2274,7 @@ fs/stat.c
 fs/statfs.c
 fs/super.c
 fs/sync.c
+fs/sysctls.c
 fs/sysfs/dir.c
 fs/sysfs/file.c
 fs/sysfs/group.c
@@ -2336,7 +2350,6 @@ include/asm-generic/bitops/non-instrumented-non-atomic.h
 include/asm-generic/bitops/sched.h
 include/asm-generic/bitsperlong.h
 include/asm-generic/bug.h
-include/asm-generic/bugs.h
 include/asm-generic/cacheflush.h
 include/asm-generic/checksum.h
 include/asm-generic/compat.h
@@ -2902,6 +2915,7 @@ include/linux/gpio_keys.h
 include/linux/gunyah.h
 include/linux/gunyah_rsc_mgr.h
 include/linux/gunyah_vm_mgr.h
+include/linux/gzvm_drv.h
 include/linux/hardirq.h
 include/linux/hash.h
 include/linux/hashtable.h
@@ -4223,6 +4237,7 @@ include/trace/hooks/binder.h
 include/trace/hooks/bl_hib.h
 include/trace/hooks/bug.h
 include/trace/hooks/cgroup.h
+include/trace/hooks/compaction.h
 include/trace/hooks/cpufreq.h
 include/trace/hooks/cpuidle.h
 include/trace/hooks/cpuidle_psci.h
@@ -4258,6 +4273,7 @@ include/trace/hooks/sched.h
 include/trace/hooks/selinux.h
 include/trace/hooks/signal.h
 include/trace/hooks/softlockup.h
+include/trace/hooks/suspend.h
 include/trace/hooks/sys.h
 include/trace/hooks/syscall_check.h
 include/trace/hooks/sysrqcrash.h
@@ -4391,6 +4407,7 @@ include/uapi/linux/gen_stats.h
 include/uapi/linux/genetlink.h
 include/uapi/linux/gpio.h
 include/uapi/linux/gunyah.h
+include/uapi/linux/gzvm.h
 include/uapi/linux/hash_info.h
 include/uapi/linux/hdlc/ioctl.h
 include/uapi/linux/hdreg.h
@@ -5666,7 +5683,6 @@ net/core/dev.c
 net/core/dev.h
 net/core/dev_addr_lists.c
 net/core/dev_ioctl.c
-net/core/devlink.c
 net/core/dst.c
 net/core/dst_cache.c
 net/core/fib_notifier.c
@@ -5707,6 +5723,7 @@ net/core/sysctl_net_core.c
 net/core/tso.c
 net/core/utils.c
 net/core/xdp.c
+net/devlink/leftover.c
 net/devres.c
 net/ethernet/eth.c
 net/ethtool/bitset.c
@@ -6173,7 +6190,7 @@ net/xfrm/xfrm_hash.c
 net/xfrm/xfrm_hash.h
 net/xfrm/xfrm_inout.h
 net/xfrm/xfrm_input.c
-net/xfrm/xfrm_interface.c
+net/xfrm/xfrm_interface_core.c
 net/xfrm/xfrm_ipcomp.c
 net/xfrm/xfrm_output.c
 net/xfrm/xfrm_policy.c

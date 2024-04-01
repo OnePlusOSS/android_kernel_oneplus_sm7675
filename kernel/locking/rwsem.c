@@ -34,6 +34,8 @@
 #include <trace/hooks/dtask.h>
 #include <trace/hooks/rwsem.h>
 
+extern void rwsem_lock_handler(u64 sem, struct task_struct *tsk, unsigned long jiffies);
+extern void rwsem_read_wait_handler(struct rw_semaphore *sem);
 /*
  * The least significant 2 bits of the owner value has the following
  * meanings when set.
@@ -250,6 +252,7 @@ static inline bool rwsem_read_trylock(struct rw_semaphore *sem, long *cntp)
 	if (!(*cntp & RWSEM_READ_FAILED_MASK)) {
 		rwsem_set_reader_owned(sem);
 		trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+		rwsem_lock_handler((u64)sem, current, jiffies);
 		return true;
 	}
 
@@ -264,6 +267,7 @@ static inline bool rwsem_write_trylock(struct rw_semaphore *sem)
 	preempt_disable();
 	if (atomic_long_try_cmpxchg_acquire(&sem->count, &tmp, RWSEM_WRITER_LOCKED)) {
 		trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+		rwsem_lock_handler((u64)sem, current, jiffies);
 		rwsem_set_owner(sem);
 		ret = true;
 	}
@@ -1055,6 +1059,7 @@ rwsem_down_read_slowpath(struct rw_semaphore *sem, long count, unsigned int stat
 			wake_up_q(&wake_q);
 		}
 		trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+		rwsem_lock_handler((u64)sem, current, jiffies);
 		return sem;
 	}
 
@@ -1104,6 +1109,7 @@ queue:
 
 	/* wait to be given the lock */
 	trace_android_vh_rwsem_read_wait_start(sem);
+	rwsem_read_wait_handler(sem);
 	for (;;) {
 		set_current_state(state);
 		if (!smp_load_acquire(&waiter.task)) {
@@ -1127,6 +1133,7 @@ queue:
 	lockevent_inc(rwsem_rlock);
 	trace_contention_end(sem, 0);
 	trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+	rwsem_lock_handler((u64)sem, current, jiffies);
 	return sem;
 
 out_nolock:
@@ -1152,6 +1159,7 @@ rwsem_down_write_slowpath(struct rw_semaphore *sem, int state)
 	if (rwsem_can_spin_on_owner(sem) && rwsem_optimistic_spin(sem)) {
 		/* rwsem_optimistic_spin() implies ACQUIRE on success */
 		trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+		rwsem_lock_handler((u64)sem, current, jiffies);
 		return sem;
 	}
 
@@ -1236,6 +1244,7 @@ trylock_again:
 	lockevent_inc(rwsem_wlock);
 	trace_contention_end(sem, 0);
 	trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+	rwsem_lock_handler((u64)sem, current, jiffies);
 	return sem;
 
 out_nolock:
@@ -1341,6 +1350,7 @@ static inline int __down_read_trylock(struct rw_semaphore *sem)
 			rwsem_set_reader_owned(sem);
 			ret = 1;
 			trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+			rwsem_lock_handler((u64)sem, current, jiffies);
 			break;
 		}
 	}
@@ -1397,6 +1407,7 @@ static inline void __up_read(struct rw_semaphore *sem)
 		rwsem_wake(sem);
 	}
 	trace_android_vh_record_rwsem_lock_starttime(current, 0);
+	rwsem_lock_handler((u64)sem, current, 0);
 	preempt_enable();
 }
 
@@ -1422,6 +1433,7 @@ static inline void __up_write(struct rw_semaphore *sem)
 	if (unlikely(tmp & RWSEM_FLAG_WAITERS))
 		rwsem_wake(sem);
 	trace_android_vh_record_rwsem_lock_starttime(current, 0);
+	rwsem_lock_handler((u64)sem, current, 0);
 }
 
 /*

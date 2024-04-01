@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2022, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <asm/unistd.h>
@@ -2038,6 +2038,7 @@ static int hgsl_ioctl_mem_alloc(struct file *filep, unsigned long arg)
 	}
 
 	mem_node->flags = params.flags;
+	mem_node->default_iocoherency = hgsl->default_iocoherency;
 
 	ret = hgsl_sharedmem_alloc(hgsl->dev, params.sizebytes, params.flags, mem_node);
 	if (ret)
@@ -2152,7 +2153,7 @@ static int hgsl_ioctl_set_metainfo(struct file *filep, unsigned long arg)
 	int ret = 0;
 	struct hgsl_mem_node *mem_node = NULL;
 	struct hgsl_mem_node *tmp = NULL;
-	char metainfo[HGSL_MEM_META_MAX_SIZE];
+	char metainfo[HGSL_MEM_META_MAX_SIZE] = {0};
 
 	if (copy_from_user(&params, USRPTR(arg), sizeof(params))) {
 		pr_err_ratelimited("failed to copy params from user");
@@ -2201,6 +2202,7 @@ out:
 static int hgsl_ioctl_mem_map_smmu(struct file *filep, unsigned long arg)
 {
 	struct hgsl_priv *priv = filep->private_data;
+	struct qcom_hgsl *hgsl = priv->dev;
 	struct hgsl_ioctl_mem_map_smmu_params params;
 	int ret = 0;
 	struct hgsl_mem_node *mem_node = NULL;
@@ -2228,6 +2230,7 @@ static int hgsl_ioctl_mem_map_smmu(struct file *filep, unsigned long arg)
 	mem_node->flags = params.flags;
 	mem_node->fd = params.fd;
 	mem_node->memtype = params.memtype;
+	mem_node->default_iocoherency = hgsl->default_iocoherency;
 	ret = hgsl_hyp_mem_map_smmu(hab_channel, params.size, params.offset, mem_node);
 
 	if (ret == 0) {
@@ -3799,6 +3802,9 @@ static int qcom_hgsl_probe(struct platform_device *pdev)
 
 	if (!hgsl_dev->db_off)
 		hgsl_init_global_hyp_channel(hgsl_dev);
+
+	hgsl_dev->default_iocoherency = of_property_read_bool(pdev->dev.of_node,
+							"default_iocoherency");
 
 	platform_set_drvdata(pdev, hgsl_dev);
 

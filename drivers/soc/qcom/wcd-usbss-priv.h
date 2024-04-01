@@ -16,6 +16,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/sched.h>
 #include <linux/soc/qcom/wcd939x-i2c.h>
+#include "wcd-usbss-registers.h"
 
 #define WCD_USBSS_SUPPLY_MAX 4
 
@@ -44,15 +45,39 @@ struct wcd_usbss_ctxt {
 	bool standby_enable;
 	bool is_in_standby;
 	struct mutex switch_update_lock;
+	struct mutex runtime_env_counter_lock;
 	unsigned int version;
 	int wcd_standby_status;
+	int runtime_env_counter;
 	struct nvmem_cell *nvmem_cell;
-	bool defer_writes;
-	int req_state;
 	bool suspended;
+//#ifdef OPLUS_ARCH_EXTENDS
+/* Checking whether the surge occurs */
+	struct workqueue_struct *check_surge_workqueue;
+	struct delayed_work check_surge_delaywork;
+//#endif /* OPLUS_ARCH_EXTENDS */
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	struct mutex noti_lock;
+	struct notifier_block chg_nb;
+	bool chg_registration;
+#endif
 };
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+enum TYPEC_AUDIO_SWITCH_STATE {
+	TYPEC_AUDIO_SWITCH_STATE_DPDM          = 0x0,
+	TYPEC_AUDIO_SWITCH_STATE_FAST_CHG      = 0x1,
+	TYPEC_AUDIO_SWITCH_STATE_AUDIO         = 0x1 << 1,
+	TYPEC_AUDIO_SWITCH_STATE_UNKNOW        = 0x1 << 2,
+	TYPEC_AUDIO_SWITCH_STATE_SUPPORT       = 0x1 << 4,
+	TYPEC_AUDIO_SWITCH_STATE_NO_RAM,
+	TYPEC_AUDIO_SWITCH_STATE_I2C_ERR       = 0x1 << 8,
+	TYPEC_AUDIO_SWITCH_STATE_INVALID_PARAM = 0x1 << 9,
+};
+#endif
 
 extern struct regmap *wcd_usbss_regmap_init(struct device *dev,
 				   const struct regmap_config *config);
 extern struct regmap_config wcd_usbss_regmap_config;
+extern const u8 wcd_usbss_reg_access[WCD_USBSS_NUM_REGISTERS];
 #endif /* WCD_USBSS_PRIV_H */

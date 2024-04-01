@@ -186,7 +186,7 @@ static inline
 u32 ufs_qcom_phy_qmp_v4_get_tx_hs_equalizer(struct ufs_qcom_phy *phy, u32 gear)
 {
 	if (gear == 5)
-		return DEEMPHASIS_3_5_dB;
+		return NO_DEEMPHASIS;
 	/* Gear 1-4 setting */
 	return NO_DEEMPHASIS;
 }
@@ -338,6 +338,7 @@ out:
 
 static const struct of_device_id ufs_qcom_phy_qmp_v4_of_match[] = {
 	{.compatible = "qcom,ufs-phy-qmp-v4-pineapple"},
+	{.compatible = "qcom,ufs-phy-qmp-v4-cliffs"},
 	{},
 };
 MODULE_DEVICE_TABLE(of, ufs_qcom_phy_qmp_v4_of_match);

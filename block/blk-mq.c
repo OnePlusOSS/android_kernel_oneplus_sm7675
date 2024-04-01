@@ -49,6 +49,26 @@ static DEFINE_PER_CPU(struct llist_head, blk_cpu_done);
 static void blk_mq_poll_stats_start(struct request_queue *q);
 static void blk_mq_poll_stats_fn(struct blk_stat_callback *cb);
 
+#ifdef CONFIG_BLOCKIO_UX_OPT
+DEFINE_PER_CPU(__u32, block_ux_softirqs);
+unsigned long blk_send_ipi_counter = 0;
+extern bool should_queue_work_ux(struct bio *bio);
+void set_block_ux_softirqs(void)
+{
+	__this_cpu_or(block_ux_softirqs, 1);
+}
+
+__u32 get_block_ux_softirqs(void)
+{
+	return __this_cpu_read(block_ux_softirqs);
+}
+
+void clear_block_ux_softirqs(void)
+{
+	__this_cpu_write(block_ux_softirqs, 0);
+}
+#endif
+
 static int blk_mq_poll_stats_bkt(const struct request *rq)
 {
 	int ddir, sectors, bucket;
@@ -685,6 +705,10 @@ static void __blk_mq_free_request(struct request *rq)
 	blk_crypto_free_request(rq);
 	blk_pm_mark_last_busy(rq);
 	rq->mq_hctx = NULL;
+
+	if (rq->rq_flags & RQF_MQ_INFLIGHT)
+		__blk_mq_dec_active_requests(hctx);
+
 	if (rq->tag != BLK_MQ_NO_TAG)
 		blk_mq_put_tag(hctx->tags, ctx, rq->tag);
 	if (sched_tag != BLK_MQ_NO_TAG)
@@ -696,14 +720,10 @@ static void __blk_mq_free_request(struct request *rq)
 void blk_mq_free_request(struct request *rq)
 {
 	struct request_queue *q = rq->q;
-	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
 
 	if ((rq->rq_flags & RQF_ELVPRIV) &&
 	    q->elevator->type->ops.finish_request)
 		q->elevator->type->ops.finish_request(rq);
-
-	if (rq->rq_flags & RQF_MQ_INFLIGHT)
-		__blk_mq_dec_active_requests(hctx);
 
 	if (unlikely(laptop_mode && !blk_rq_is_passthrough(rq)))
 		laptop_io_completion(q->disk->bdi);
@@ -1126,6 +1146,18 @@ static int blk_softirq_cpu_dead(unsigned int cpu)
 
 static void __blk_mq_complete_request_remote(void *data)
 {
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		struct request *rq = (struct request *)data;
+		struct bio *bio;
+
+		for (bio = rq->bio; bio; bio = bio->bi_next) {
+			if (should_queue_work_ux(bio)) {
+				set_block_ux_softirqs();
+				break;
+			}
+		}
+#endif
+
 	__raise_softirq_irqoff(BLOCK_SOFTIRQ);
 }
 
@@ -1174,8 +1206,19 @@ static void blk_mq_raise_softirq(struct request *rq)
 
 	preempt_disable();
 	list = this_cpu_ptr(&blk_cpu_done);
-	if (llist_add(&rq->ipi_list, list))
+	if (llist_add(&rq->ipi_list, list)) {
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		struct bio *bio;
+
+		for (bio = rq->bio; bio; bio = bio->bi_next) {
+			if (should_queue_work_ux(bio)) {
+				set_block_ux_softirqs();
+				break;
+			}
+		}
+#endif
 		raise_softirq(BLOCK_SOFTIRQ);
+	}
 	preempt_enable();
 }
 
@@ -1194,6 +1237,9 @@ bool blk_mq_complete_request_remote(struct request *rq)
 		return false;
 
 	if (blk_mq_complete_need_ipi(rq)) {
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		blk_send_ipi_counter++;
+#endif
 		blk_mq_complete_send_ipi(rq);
 		return true;
 	}
@@ -1314,7 +1360,7 @@ void blk_execute_rq_nowait(struct request *rq, bool at_head)
 	 * device, directly accessing the plug instead of using blk_mq_plug()
 	 * should not have any consequences.
 	 */
-	if (current->plug)
+	if (current->plug && !at_head)
 		blk_add_rq_to_plug(current->plug, rq);
 	else
 		blk_mq_sched_insert_request(rq, at_head, true, false);
@@ -2747,7 +2793,14 @@ void blk_mq_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 {
 	struct request *rq;
 
-	if (rq_list_empty(plug->mq_list))
+	/*
+	 * We may have been called recursively midway through handling
+	 * plug->mq_list via a schedule() in the driver's queue_rq() callback.
+	 * To avoid mq_list changing under our feet, clear rq_count early and
+	 * bail out specifically if rq_count is 0 rather than checking
+	 * whether the mq_list is empty.
+	 */
+	if (plug->rq_count == 0)
 		return;
 	plug->rq_count = 0;
 

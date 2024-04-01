@@ -5,6 +5,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
@@ -22,9 +23,11 @@
 #include <linux/pinctrl/consumer.h>
 
 #define SPI_NUM_CHIPSELECT	(4)
-#define SPI_XFER_TIMEOUT_MS	(250)
+/* modify timeout to 2s for oplus_consumer_ir spi mode */
+//#define SPI_XFER_TIMEOUT_MS	(250)
+#define SPI_XFER_TIMEOUT_MS   (6000)
 #define SPI_AUTO_SUSPEND_DELAY	(250)
-#define SPI_XFER_TIMEOUT_OFFSET	(250)
+#define SPI_XFER_TIMEOUT_OFFSET	(6000)
 #define SPI_SLAVE_SYNC_XFER_TIMEOUT_OFFSET	(50)
 
 /* SPI SE specific registers */
@@ -209,6 +212,8 @@ struct spi_geni_master {
 	int num_rx_eot;
 	int num_xfers;
 	void *ipc;
+	void *ipc_log_kpi;
+	int spi_kpi;
 	bool gsi_mode; /* GSI Mode */
 	bool shared_ee; /* Dual EE use case */
 	bool shared_se; /* True Multi EE use case */
@@ -331,6 +336,69 @@ static ssize_t spi_slave_state_store(struct device *dev,
 }
 
 static DEVICE_ATTR_RW(spi_slave_state);
+
+/*
+ * capture_kpi_show() - Prints the value stored in capture_kpi sysfs entry
+ *
+ * @dev: pointer to device
+ * @attr: device attributes
+ * @buf: buffer to store the capture_kpi_value
+ *
+ * Return: prints capture_kpi value or error value
+ */
+static ssize_t capture_kpi_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct spi_master *spi = platform_get_drvdata(pdev);
+	struct spi_geni_master *geni_mas;
+
+	geni_mas = spi_master_get_devdata(spi);
+	if (!geni_mas)
+		return -EINVAL;
+
+	return scnprintf(buf, sizeof(int), "%d\n", geni_mas->spi_kpi);
+}
+
+/*
+ * capture_kpi_store() - store the capture_kpi sysfs value
+ *
+ * @dev: pointer to device
+ * @attr: device attributes
+ * @buf: buffer to store the capture_kpi_value
+ * @size: returns the value of size.
+ *
+ * Return: Size copied in the buffer or error value
+ */
+static ssize_t capture_kpi_store(struct device *dev,
+				 struct device_attribute *attr, const char *buf,
+				 size_t size)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct spi_master *spi = platform_get_drvdata(pdev);
+	struct spi_geni_master *geni_mas;
+	char name[36];
+
+	geni_mas = spi_master_get_devdata(spi);
+	if (!geni_mas)
+		return -EINVAL;
+
+	if (kstrtoint(buf, 0, &geni_mas->spi_kpi)) {
+		dev_err(dev, "Invalid input\n");
+		return -EINVAL;
+	}
+
+	if (geni_mas->spi_kpi && !geni_mas->ipc_log_kpi) {
+		memset(name, 0, sizeof(name));
+		scnprintf(name, sizeof(name), "%s%s", dev_name(geni_mas->dev), "_kpi");
+		geni_mas->ipc_log_kpi = ipc_log_context_create(IPC_LOG_KPI_PAGES, name, 0);
+		if (!geni_mas->ipc_log_kpi && IS_ENABLED(CONFIG_IPC_LOGGING))
+			dev_err(&pdev->dev, "Error creating kpi IPC logs\n");
+	}
+
+	return size;
+}
+static DEVICE_ATTR_RW(capture_kpi);
 
 static void spi_master_setup(struct spi_geni_master *mas)
 {
@@ -683,8 +751,14 @@ static void spi_gsi_ch_cb(struct dma_chan *ch, struct msm_gpi_cb const *cb,
 				void *ptr)
 {
 	struct spi_master *spi = ptr;
-	struct spi_geni_master *mas = spi_master_get_devdata(spi);
+	struct spi_geni_master *mas;
 
+	if (!ptr || !cb) {
+		pr_err("%s: Invalid ev_cb buffer\n", __func__);
+		return;
+	}
+
+	mas = spi_master_get_devdata(spi);
 	switch (cb->cb_event) {
 	case MSM_GPI_QUP_NOTIFY:
 	case MSM_GPI_QUP_MAX_EVENT:
@@ -724,10 +798,20 @@ static void spi_gsi_rx_callback(void *cb)
 {
 	struct msm_gpi_dma_async_tx_cb_param *cb_param =
 			(struct msm_gpi_dma_async_tx_cb_param *)cb;
-	struct gsi_desc_cb *desc_cb = (struct gsi_desc_cb *)cb_param->userdata;
-	struct spi_master *spi = desc_cb->spi;
-	struct spi_transfer *xfer = desc_cb->xfer;
-	struct spi_geni_master *mas = spi_master_get_devdata(spi);
+	struct gsi_desc_cb *desc_cb;
+	struct spi_master *spi;
+	struct spi_transfer *xfer;
+	struct spi_geni_master *mas;
+
+	if (!(cb_param && cb_param->userdata)) {
+		pr_err("%s: Invalid rx_cb buffer\n", __func__);
+		return;
+	}
+
+	desc_cb = (struct gsi_desc_cb *)cb_param->userdata;
+	spi = desc_cb->spi;
+	xfer = desc_cb->xfer;
+	mas = spi_master_get_devdata(spi);
 
 	if (xfer->rx_buf) {
 		if (cb_param->status == MSM_GPI_TCE_UNEXP_ERR) {
@@ -750,10 +834,20 @@ static void spi_gsi_rx_callback(void *cb)
 static void spi_gsi_tx_callback(void *cb)
 {
 	struct msm_gpi_dma_async_tx_cb_param *cb_param = cb;
-	struct gsi_desc_cb *desc_cb = (struct gsi_desc_cb *)cb_param->userdata;
-	struct spi_master *spi = desc_cb->spi;
-	struct spi_transfer *xfer = desc_cb->xfer;
-	struct spi_geni_master *mas = spi_master_get_devdata(spi);
+	struct gsi_desc_cb *desc_cb;
+	struct spi_master *spi;
+	struct spi_transfer *xfer;
+	struct spi_geni_master *mas;
+
+	if (!(cb_param && cb_param->userdata)) {
+		pr_err("%s: Invalid tx_cb buffer\n", __func__);
+		return;
+	}
+
+	desc_cb = (struct gsi_desc_cb *)cb_param->userdata;
+	spi = desc_cb->spi;
+	xfer = desc_cb->xfer;
+	mas = spi_master_get_devdata(spi);
 
 	/*
 	 * Case when lock/unlock support is required:
@@ -1143,6 +1237,10 @@ static int spi_geni_prepare_message(struct spi_master *spi,
 	int ret = 0;
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
 	int count;
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+					     mas->spi_kpi);
 
 	if (mas->shared_ee) {
 		if (mas->setup) {
@@ -1226,6 +1324,8 @@ static int spi_geni_prepare_message(struct spi_master *spi,
 	}
 
 exit_prepare_message:
+	geni_capture_stop_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+			       mas->spi_kpi, start_time, 0, 0);
 	return ret;
 }
 
@@ -1234,6 +1334,10 @@ static int spi_geni_unprepare_message(struct spi_master *spi_mas,
 {
 	struct spi_geni_master *mas = spi_master_get_devdata(spi_mas);
 	int count = 0;
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+					     mas->spi_kpi);
 
 	mas->cur_speed_hz = 0;
 	mas->cur_word_len = 0;
@@ -1258,6 +1362,8 @@ static int spi_geni_unprepare_message(struct spi_master *spi_mas,
 		}
 	}
 
+	geni_capture_stop_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+			       mas->spi_kpi, start_time, 0, 0);
 	return 0;
 }
 
@@ -1468,7 +1574,10 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 {
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
 	int ret = 0, count = 0;
+	unsigned long long start_time;
 
+	start_time = geni_capture_start_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+					     mas->spi_kpi);
 	/*
 	 * Not required for LE as below intializations are specific
 	 * to usecases. For LE, client takes care of get_sync.
@@ -1534,6 +1643,8 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 		}
 	}
 
+	geni_capture_stop_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+			       mas->spi_kpi, start_time, 0, 0);
 	return ret;
 }
 
@@ -1541,6 +1652,10 @@ static int spi_geni_unprepare_transfer_hardware(struct spi_master *spi)
 {
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
 	int count = 0;
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+					     mas->spi_kpi);
 
 	if (mas->shared_ee || mas->is_le_vm) {
 		mas->is_xfer_in_progress = false;
@@ -1574,6 +1689,8 @@ static int spi_geni_unprepare_transfer_hardware(struct spi_master *spi)
 	}
 
 	mas->is_xfer_in_progress = false;
+	geni_capture_stop_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+			       mas->spi_kpi, start_time, 0, 0);
 	return 0;
 }
 
@@ -1785,6 +1902,10 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 	int ret = 0;
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
 	unsigned long timeout, xfer_timeout;
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+					     mas->spi_kpi);
 
 	if ((xfer->tx_buf == NULL) && (xfer->rx_buf == NULL)) {
 		dev_err(mas->dev, "Invalid xfer both tx rx are NULL\n");
@@ -1907,6 +2028,9 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 			}
 		}
 	}
+
+	geni_capture_stop_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+			       mas->spi_kpi, start_time, xfer->len, mas->cur_speed_hz);
 	return ret;
 err_gsi_geni_transfer_one:
 	geni_spi_se_dump_dbg_regs(&mas->spi_rsc, mas->base, mas->ipc);
@@ -2024,6 +2148,10 @@ static irqreturn_t geni_spi_irq(int irq, void *data)
 {
 	struct spi_geni_master *mas = data;
 	u32 m_irq = 0;
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+					     mas->spi_kpi);
 
 	if (pm_runtime_status_suspended(mas->dev)) {
 		SPI_LOG_DBG(mas->ipc, false, mas->dev,
@@ -2091,6 +2219,8 @@ exit_geni_spi_irq:
 		mas->cmd_done = false;
 		complete(&mas->xfer_done);
 	}
+	geni_capture_stop_time(&mas->spi_rsc, mas->ipc_log_kpi, __func__,
+			       mas->spi_kpi, start_time, 0, 0);
 	return IRQ_HANDLED;
 }
 
@@ -2186,6 +2316,8 @@ static int spi_geni_probe(struct platform_device *pdev)
 
 	if (slave_en)
 		spi->slave_abort = spi_slv_abort;
+
+	pr_info("boot_kpi: M - DRIVER GENI_SPI Init\n");
 
 	platform_set_drvdata(pdev, spi);
 	geni_mas = spi_master_get_devdata(spi);
@@ -2388,10 +2520,14 @@ static int spi_geni_probe(struct platform_device *pdev)
 
 	ret = sysfs_create_file(&(geni_mas->dev->kobj),
 			&dev_attr_spi_slave_state.attr);
+	device_create_file(geni_mas->dev, &dev_attr_capture_kpi);
 
 	geni_mas->is_xfer_in_progress = false;
 
 	dev_info(&pdev->dev, "%s: completed %d\n", __func__, ret);
+
+	pr_info("boot_kpi: M - DRIVER GENI_SPI_%d Ready\n", spi->bus_num);
+
 	return ret;
 spi_geni_probe_err:
 	dev_info(&pdev->dev, "%s: ret:%d\n", __func__, ret);
@@ -2406,6 +2542,7 @@ static int spi_geni_remove(struct platform_device *pdev)
 	struct spi_geni_master *geni_mas = spi_master_get_devdata(master);
 
 	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_spi_slave_state.attr);
+	device_remove_file(geni_mas->dev, &dev_attr_capture_kpi);
 	geni_se_common_clks_off(geni_mas->spi_rsc.clk, geni_mas->m_ahb_clk, geni_mas->s_ahb_clk);
 	ret = geni_icc_disable(&geni_mas->spi_rsc);
 	if (ret)
@@ -2414,6 +2551,13 @@ static int spi_geni_remove(struct platform_device *pdev)
 	spi_unregister_master(master);
 	pm_runtime_put_noidle(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	if (geni_mas->ipc)
+		ipc_log_context_destroy(geni_mas->ipc);
+
+	if (geni_mas->ipc_log_kpi)
+		ipc_log_context_destroy(geni_mas->ipc_log_kpi);
+
 	return 0;
 }
 
@@ -2438,7 +2582,8 @@ static int spi_geni_gpi_pause_resume(struct spi_geni_master *geni_mas, bool is_s
 	return 0;
 }
 
-static int spi_geni_levm_suspend_proc(struct spi_geni_master *geni_mas, struct spi_master *spi)
+static int spi_geni_levm_suspend_proc(struct spi_geni_master *geni_mas, struct spi_master *spi,
+				      unsigned long long start_time)
 {
 	int ret = 0;
 
@@ -2466,6 +2611,8 @@ static int spi_geni_levm_suspend_proc(struct spi_geni_master *geni_mas, struct s
 		}
 	}
 	SPI_LOG_DBG(geni_mas->ipc, false, geni_mas->dev, "%s: ret:%d\n", __func__, ret);
+	geni_capture_stop_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+			       geni_mas->spi_kpi, start_time, 0, 0);
 	return 0;
 }
 
@@ -2474,10 +2621,14 @@ static int spi_geni_runtime_suspend(struct device *dev)
 	int ret = 0;
 	struct spi_master *spi = get_spi_master(dev);
 	struct spi_geni_master *geni_mas = spi_master_get_devdata(spi);
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+					     geni_mas->spi_kpi);
 
 	disable_irq(geni_mas->irq);
 	if (geni_mas->is_le_vm) {
-		return spi_geni_levm_suspend_proc(geni_mas, spi);
+		return spi_geni_levm_suspend_proc(geni_mas, spi, start_time);
 	}
 
 	SPI_LOG_DBG(geni_mas->ipc, false, geni_mas->dev, "%s: %d\n", __func__, ret);
@@ -2513,10 +2664,13 @@ exit_rt_suspend:
 		SPI_LOG_DBG(geni_mas->ipc, false, geni_mas->dev,
 		"%s failing at geni_icc_disable ret=%d\n", __func__, ret);
 
+	geni_capture_stop_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+			       geni_mas->spi_kpi, start_time, 0, 0);
 	return ret;
 }
 
-static int spi_geni_levm_resume_proc(struct spi_geni_master *geni_mas, struct spi_master *spi)
+static int spi_geni_levm_resume_proc(struct spi_geni_master *geni_mas, struct spi_master *spi,
+				     unsigned long long start_time)
 {
 	int ret = 0;
 
@@ -2545,6 +2699,8 @@ static int spi_geni_levm_resume_proc(struct spi_geni_master *geni_mas, struct sp
 		return ret;
 	}
 	SPI_LOG_DBG(geni_mas->ipc, false, geni_mas->dev, "%s: ret:%d\n", __func__, ret);
+	geni_capture_stop_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+			       geni_mas->spi_kpi, start_time, 0, 0);
 	/* Return here as LE VM doesn't need resourc/clock management */
 	return ret;
 }
@@ -2554,9 +2710,13 @@ static int spi_geni_runtime_resume(struct device *dev)
 	int ret = 0;
 	struct spi_master *spi = get_spi_master(dev);
 	struct spi_geni_master *geni_mas = spi_master_get_devdata(spi);
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+					     geni_mas->spi_kpi);
 
 	if (geni_mas->is_le_vm)
-		return spi_geni_levm_resume_proc(geni_mas, spi);
+		return spi_geni_levm_resume_proc(geni_mas, spi, start_time);
 
 	SPI_LOG_DBG(geni_mas->ipc, false, geni_mas->dev, "%s: %d\n", __func__, ret);
 
@@ -2601,11 +2761,18 @@ exit_rt_resume:
 		return ret;
 	}
 	ret = geni_se_resources_on(&geni_mas->spi_rsc);
+
+	geni_write_reg(0x7f, geni_mas->base, GENI_OUTPUT_CTRL);
+	/* Added 10 us delay to settle the write of the register as per HW team recommendation */
+	udelay(10);
+
 	enable_irq(geni_mas->irq);
 
 	if (geni_mas->gsi_mode)
 		ret = spi_geni_gpi_pause_resume(geni_mas, false);
 
+	geni_capture_stop_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+			       geni_mas->spi_kpi, start_time, 0, 0);
 	return ret;
 }
 
@@ -2619,6 +2786,10 @@ static int spi_geni_suspend(struct device *dev)
 	int ret = 0;
 	struct spi_master *spi = get_spi_master(dev);
 	struct spi_geni_master *geni_mas = spi_master_get_devdata(spi);
+	unsigned long long start_time;
+
+	start_time = geni_capture_start_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+					     geni_mas->spi_kpi);
 
 	if (geni_mas->is_xfer_in_progress) {
 		if (!pm_runtime_status_suspended(dev)) {
@@ -2650,6 +2821,9 @@ static int spi_geni_suspend(struct device *dev)
 			ret = -EBUSY;
 		}
 	}
+
+	geni_capture_stop_time(&geni_mas->spi_rsc, geni_mas->ipc_log_kpi, __func__,
+			       geni_mas->spi_kpi, start_time, 0, 0);
 	return ret;
 }
 #else

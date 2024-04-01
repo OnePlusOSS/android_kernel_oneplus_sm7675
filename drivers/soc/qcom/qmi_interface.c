@@ -12,6 +12,7 @@
 #include <linux/string.h>
 #include <net/sock.h>
 #include <linux/workqueue.h>
+#include <linux/rcupdate.h>
 #include <linux/soc/qcom/qmi.h>
 
 static struct socket *qmi_sock_create(struct qmi_handle *qmi,
@@ -311,6 +312,7 @@ int qmi_txn_init(struct qmi_handle *qmi, struct qmi_txn *txn,
 
 	memset(txn, 0, sizeof(*txn));
 
+	//mutex_init(&txn->lock);
 	init_completion(&txn->completion);
 	txn->qmi = qmi;
 	txn->ei = ei;
@@ -351,6 +353,9 @@ int qmi_txn_wait(struct qmi_txn *txn, unsigned long timeout)
 
 	mutex_lock(&qmi->txn_lock);
 	idr_remove(&qmi->txns, txn->id);
+	//mutex_lock(&txn->lock);
+	idr_remove(&qmi->txns, txn->id);
+	//mutex_unlock(&txn->lock);
 	mutex_unlock(&qmi->txn_lock);
 
 	if (ret == 0)
@@ -370,6 +375,9 @@ void qmi_txn_cancel(struct qmi_txn *txn)
 
 	mutex_lock(&qmi->txn_lock);
 	idr_remove(&qmi->txns, txn->id);
+	//mutex_lock(&txn->lock);
+	idr_remove(&qmi->txns, txn->id);
+	//mutex_unlock(&txn->lock);
 	mutex_unlock(&qmi->txn_lock);
 }
 EXPORT_SYMBOL(qmi_txn_cancel);
@@ -492,6 +500,10 @@ static void qmi_handle_message(struct qmi_handle *qmi,
 			mutex_unlock(&qmi->txn_lock);
 			return;
 		}
+
+		//mutex_lock(&txn->lock);
+		//mutex_unlock(&qmi->txn_lock);
+
 		if (txn->dest && txn->ei) {
 			ret = qmi_decode_message(buf, len, txn->ei, txn->dest);
 			if (ret < 0)
@@ -502,6 +514,8 @@ static void qmi_handle_message(struct qmi_handle *qmi,
 		} else {
 			qmi_invoke_handler(qmi, sq, txn, buf, len);
 		}
+
+		//mutex_unlock(&txn->lock);
 		mutex_unlock(&qmi->txn_lock);
 	} else {
 		/* Create a txn based on the txn_id of the incoming message */
@@ -560,16 +574,17 @@ static void qmi_data_ready_work(struct work_struct *work)
 
 static void qmi_data_ready(struct sock *sk)
 {
-	struct qmi_handle *qmi = sk->sk_user_data;
+	struct qmi_handle *qmi = NULL;
 
 	/*
 	 * This will be NULL if we receive data while being in
 	 * qmi_handle_release()
 	 */
-	if (!qmi)
-		return;
-
-	queue_work(qmi->wq, &qmi->work);
+	rcu_read_lock();
+	qmi = rcu_dereference_sk_user_data(sk);
+	if (qmi)
+		queue_work(qmi->wq, &qmi->work);
+	rcu_read_unlock();
 }
 
 static struct socket *qmi_sock_create(struct qmi_handle *qmi,
@@ -589,9 +604,10 @@ static struct socket *qmi_sock_create(struct qmi_handle *qmi,
 		return ERR_PTR(ret);
 	}
 
-	sock->sk->sk_user_data = qmi;
+	rcu_assign_sk_user_data(sock->sk, qmi);
 	sock->sk->sk_data_ready = qmi_data_ready;
 	sock->sk->sk_error_report = qmi_data_ready;
+	sock->sk->sk_sndtimeo = HZ * 10;
 
 	return sock;
 }
@@ -676,20 +692,22 @@ EXPORT_SYMBOL(qmi_handle_init);
  */
 void qmi_handle_release(struct qmi_handle *qmi)
 {
-	struct socket *sock = qmi->sock;
+	struct socket *sock;
 	struct qmi_service *svc, *tmp;
 	struct qmi_txn *txn;
 	int txn_id;
 
-	sock->sk->sk_user_data = NULL;
-	cancel_work_sync(&qmi->work);
-
-	qmi_recv_del_server(qmi, -1, -1);
-
 	mutex_lock(&qmi->sock_lock);
+	sock = qmi->sock;
+	rcu_assign_sk_user_data(sock->sk, NULL);
+	synchronize_rcu();
 	sock_release(sock);
 	qmi->sock = NULL;
 	mutex_unlock(&qmi->sock_lock);
+
+	cancel_work_sync(&qmi->work);
+
+	qmi_recv_del_server(qmi, -1, -1);
 
 	destroy_workqueue(qmi->wq);
 
