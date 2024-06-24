@@ -2639,7 +2639,7 @@ static int ufs_qcom_unvote_qos_all(struct ufs_hba *hba)
 
 	qcg = ufs_qos_req->qcg;
 	for (i = 0; i < ufs_qos_req->num_groups; i++, qcg++) {
-		flush_work(&qcg->vwork);
+		cancel_work_sync(&qcg->vwork);
 		if (!qcg->voted)
 			continue;
 		err = ufs_qcom_update_qos_constraints(qcg, QOS_MAX);

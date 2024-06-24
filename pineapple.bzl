@@ -123,7 +123,6 @@ def define_pineapple():
         "drivers/power/reset/qcom-reboot-reason.ko",
         "drivers/power/reset/reboot-mode.ko",
         #"drivers/power/supply/qti_battery_charger.ko",
-        "drivers/power/oplus/config/oplus_cfg.ko",
         "drivers/power/oplus/v2/oplus_chg_v2.ko",
         "drivers/power/oplus/test-kit/test-kit.ko",
         "drivers/power/oplus/v2/ufcs/ufcs_class.ko",
