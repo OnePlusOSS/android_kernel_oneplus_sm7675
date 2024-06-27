@@ -2,6 +2,8 @@ load(":target_variants.bzl", "la_variants")
 load(":msm_kernel_la.bzl", "define_msm_la")
 load(":image_opts.bzl", "boot_image_opts")
 
+load("//oplus/bazel:oplus_modules_define.bzl", _get_oplus_features = "oplus_ddk_get_oplus_features")
+
 target_name = "pineapple"
 
 def define_pineapple():
@@ -78,7 +80,7 @@ def define_pineapple():
         "drivers/misc/vibrator/aw8697_haptic/aw8697.ko",
         "drivers/misc/vibrator/si_haptic/si_haptic.ko",
         "drivers/input/misc/qpnp-power-on.ko",
-        "drivers/leds/aw20198/leds-aw20198.ko", 
+        "drivers/leds/aw20198/leds-aw20198.ko",
         "drivers/interconnect/icc-test.ko",
         "drivers/interconnect/qcom/icc-bcm-voter.ko",
         "drivers/interconnect/qcom/icc-debug.ko",
@@ -123,6 +125,7 @@ def define_pineapple():
         "drivers/power/reset/qcom-reboot-reason.ko",
         "drivers/power/reset/reboot-mode.ko",
         #"drivers/power/supply/qti_battery_charger.ko",
+        "drivers/power/oplus/wireless_pen/oplus_wireless_pen.ko",
         "drivers/power/oplus/v2/oplus_chg_v2.ko",
         "drivers/power/oplus/test-kit/test-kit.ko",
         "drivers/power/oplus/v2/ufcs/ufcs_class.ko",
@@ -325,6 +328,18 @@ def define_pineapple():
         "drivers/soc/oplus/power/subsys_sleep_monitor/oplus_subsys_sleep_monitor.ko",
         "drivers/misc/oplus_procs_load/oplus_procs_load.ko",
     ]
+
+    # Updated for kernel modules that are dynamically loaded based on environment variables
+    # 为根据环境变量而动态加载的内核模块而更新
+    _bsp_drv_inject_in_tree_modules = [
+        # keep sorted
+        "drivers/power/oplus/debug-kit/debug-kit.ko",
+    ]
+
+    features = _get_oplus_features()
+    key = 'OPLUS_FEATURE_BSP_DRV_INJECT_TEST'
+    if features.get(key, '0').upper() in ['1', 'TRUE']:
+        _pineapple_in_tree_modules += _bsp_drv_inject_in_tree_modules
 
     _pineapple_consolidate_in_tree_modules = _pineapple_in_tree_modules + [
         # keep sorted

@@ -154,7 +154,7 @@ static int acquire_runtime_env(struct wcd_usbss_ctxt *priv)
 			pm_relax(priv->dev);
 			priv->runtime_env_counter--;
 		}
-	} else if (priv->runtime_env_counter <= 0 ) {
+	} else if (priv->runtime_env_counter <= 0) {
 		dev_err(priv->dev, "%s: priv->runtime_env_counter %d underrun\n", __func__,
 				priv->runtime_env_counter);
 //#if IS_ENABLED(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)
@@ -170,6 +170,7 @@ static int acquire_runtime_env(struct wcd_usbss_ctxt *priv)
 			"pm_runtime_resume_and_get failed rc %d", rc);
 	}
 //#endif /*CONFIG_OPLUS_FEATURE_MM_FEEDBACK*/
+
 	mutex_unlock(&priv->runtime_env_counter_lock);
 
 	return rc;
@@ -680,7 +681,6 @@ static int wcd_usbss_surge_kthread_fn(void *p)
 {
 	while (!kthread_should_stop()) {
 #if 0 //OPLUS_BUG_COMPATIBILITY
-
 		if (acquire_runtime_env(wcd_usbss_ctxt_) >= 0) {
 
 			if (wcd_usbss_ctxt_->surge_enable &&

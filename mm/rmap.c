@@ -1352,7 +1352,12 @@ void page_add_file_rmap(struct page *page,
 	} else {
 		if (PageTransCompound(page) && page_mapping(page)) {
 			VM_WARN_ON_ONCE(!PageLocked(page));
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			if (!TestSetPageDoubleMap(compound_head(page)))
+				atomic_long_inc(&cont_pte_double_map_count);
+#else
 			SetPageDoubleMap(compound_head(page));
+#endif
 		}
 		if (atomic_inc_and_test(&page->_mapcount))
 			nr++;

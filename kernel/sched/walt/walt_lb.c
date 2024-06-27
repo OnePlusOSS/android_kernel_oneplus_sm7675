@@ -21,6 +21,10 @@
 #include <../kernel/oplus_cpu/sched/sched_assist/sa_common.h>
 #endif
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_pipeline.h>
+#endif
+
 static inline unsigned long walt_lb_cpu_util(int cpu)
 {
 	struct walt_rq *wrq = &per_cpu(walt_rq, cpu);
@@ -279,6 +283,11 @@ static inline bool _walt_can_migrate_task(struct task_struct *p, int dst_cpu,
 	/* Don't detach task if dest cpu is halted */
 	if (cpu_halted(dst_cpu))
 		return false;
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+	if (oplus_pipeline_task_skip_cpu(p, dst_cpu))
+		return false;
+#endif
 
 	return true;
 }

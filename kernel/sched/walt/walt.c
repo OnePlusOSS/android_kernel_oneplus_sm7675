@@ -45,6 +45,14 @@
 #include <../kernel/oplus_cpu/sched/eas_opt/oplus_iowait.h>
 #endif
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_pipeline.h>
+#endif
+
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 const char *task_event_names[] = {
 	"PUT_PREV_TASK",
 	"PICK_NEXT_TASK",
@@ -4561,7 +4569,9 @@ static void walt_irq_work(struct irq_work *irq_work)
 	int cpu;
 	bool is_migration = false, is_asym_migration = false, is_shared_rail_migration = false;
 	u32 wakeup_ctr_sum = 0;
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
 	bool found_topapp = false;
+#endif
 
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING)
 	struct walt_sched_cluster *cluster;
@@ -4626,11 +4636,15 @@ static void walt_irq_work(struct irq_work *irq_work)
 
 	if (!is_migration) {
 		wrq = &per_cpu(walt_rq, cpu_of(this_rq()));
+#if !IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
 		found_topapp = find_heaviest_topapp(wrq->window_start);
 		/* found_topapp should force rearrangement */
 		rearrange_heavy(wrq->window_start, found_topapp);
 		rearrange_pipeline_preferred_cpus(wrq->window_start);
 		pipeline_reset_boost();
+#else
+		qcom_rearrange_pipeline_preferred_cpus(walt_scale_demand_divisor);
+#endif
 		core_ctl_check(wrq->window_start, wakeup_ctr_sum);
 	}
 }

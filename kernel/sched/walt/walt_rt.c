@@ -4,6 +4,7 @@
  * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include "linux/cpumask.h"
 #include <trace/hooks/sched.h>
 
 #include "walt.h"
@@ -114,6 +115,7 @@ static void walt_rt_energy_aware_wake_cpu(struct task_struct *task, struct cpuma
 	int end_index = 0;
 	bool best_cpu_lt = true;
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	cpumask_t visit_cpus;
 	bool ignore_overutil = false;
 #endif
 
@@ -138,9 +140,24 @@ static void walt_rt_energy_aware_wake_cpu(struct task_struct *task, struct cpuma
 		end_index = 1;
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
 retry:
-#endif
+	if (!is_state1() && cpumask_subset(&part_haltable_cpus, lowest_mask)) {
+		cpumask_or(lowest_mask, lowest_mask, &asym_cap_sibling_cpus);
+	}
+	for (cluster = 0; cluster < num_sched_clusters; cluster++) {
+		cpumask_copy(&visit_cpus, &cpu_array[order_index][cluster]);
+		if (!is_state1() && cpumask_subset(&visit_cpus, &asym_cap_sibling_cpus)) {
+			if (cpumask_equal(&visit_cpus, &part_haltable_cpus)) {
+				cpumask_copy(&visit_cpus, &asym_cap_sibling_cpus);
+			} else {
+				continue;
+			}
+		}
+
+		for_each_cpu_and(cpu, lowest_mask, &visit_cpus) {
+#elif
 	for (cluster = 0; cluster < num_sched_clusters; cluster++) {
 		for_each_cpu_and(cpu, lowest_mask, &cpu_array[order_index][cluster]) {
+#endif
 			bool lt;
 
 			trace_sched_cpu_util(cpu, lowest_mask);

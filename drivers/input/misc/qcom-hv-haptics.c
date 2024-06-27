@@ -867,7 +867,7 @@ static bool is_haptics_external_powered(struct haptics_chip *chip)
 	return false;
 }
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_read(struct haptics_chip *chip,
@@ -887,7 +887,7 @@ static int haptics_read(struct haptics_chip *chip,
 	return rc;
 }
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_write(struct haptics_chip *chip,
@@ -1225,7 +1225,7 @@ static int haptics_adjust_lra_period(struct haptics_chip *chip, u32 *t_lra_us)
 	((chip->wa_flags & SLEEP_CLK_32K_SCALE) ? 600 : 586)
 
 #define CL_TLRA_ERROR_RANGE_PCT			20
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_get_closeloop_lra_period(
@@ -1506,7 +1506,7 @@ static int haptics_get_vmax_headroom_mv(struct haptics_chip *chip, u32 *hdrm_mv)
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_set_vmax_mv(struct haptics_chip *chip, u32 vmax_mv)
@@ -2256,7 +2256,7 @@ static int haptics_get_fifo_fill_status(struct haptics_chip *chip, u32 *fill)
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_get_available_fifo_memory(struct haptics_chip *chip)
@@ -2433,13 +2433,13 @@ static int haptics_set_fifo(struct haptics_chip *chip, struct fifo_cfg *fifo)
 }
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_config_openloop_lra_period(struct haptics_chip *chip, u32 t_lra_us);
 #endif
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_load_constant_effect(struct haptics_chip *chip, u8 amplitude)
@@ -2693,7 +2693,7 @@ static int haptics_convert_sample_period(struct haptics_chip *chip,
 	return period;
 }
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_load_custom_effect(struct haptics_chip *chip,
@@ -3197,7 +3197,7 @@ static int haptics_store_cl_brake_settings(struct haptics_chip *chip)
 	return rc;
 }
 
-#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FAULT_INJECT_VIBRATOR)
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_BSP_DRV_VND_INJECT_TEST)
 noinline
 #endif
 static int haptics_config_openloop_lra_period(struct haptics_chip *chip,

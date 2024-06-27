@@ -71,6 +71,7 @@ static unsigned long sysctl_max_chp_buddy_count;
 unsigned long cont_pte_pool_cma_size;
 static unsigned long cont_pte_sup_mem;
 static bool cont_pte_sup_prjname;
+static bool cmdline_chp_sup_bootmode = true;
 /* true by default, false when cont_pte_hugepage=off in cmdline */
 static bool cont_pte_hugepage_enable = true;
 bool cma_chunk_refill_ready;
@@ -3043,6 +3044,15 @@ static int __init cmdline_parse_disable(char *p)
 }
 early_param("cont_pte_hugepage", cmdline_parse_disable);
 
+#define CHP_BOOTMODE_RECOVERY_STR "recovery"
+static int __init cmdline_parse_bootmode(char *p)
+{
+	if (!strncmp(p, CHP_BOOTMODE_RECOVERY_STR, strlen(CHP_BOOTMODE_RECOVERY_STR)))
+		cmdline_chp_sup_bootmode = false;
+	return 0;
+}
+early_param("oplusboot.mode", cmdline_parse_bootmode);
+
 static int __init cmdline_parse_cont_pte_cma(char *p)
 {
 	cont_pte_pool_cma_size = ALIGN_DOWN(memparse(p, &p), CONT_PTE_CMA_CHUNK_SIZE);
@@ -3060,10 +3070,10 @@ early_param("cont_pte_sup_mem", cmdline_parse_cont_pte_sup_mem);
 static int __init cmdline_parse_prjname(char *p)
 {
 	static const char *prjs[] = {
-		"22825", "22877", "22111", "23607", "23803", "23609", "23622", "23718", NULL,
+		"22825", "22877", "22111", "23607", "23803", "23609", "23622", "23718", "23814", "22112", "24687", NULL,
 	};
 	static const char *ext_prjs[] = {
-		"22877", "23718", NULL, /* FIXME: add projects which don't support art alignment */
+		"22877", "23718", "24687", NULL, /* FIXME: add projects which don't support art alignment */
 	};
 
 	int i = 0;
@@ -3114,6 +3124,7 @@ void __init cont_pte_cma_reserve(void)
 		cont_pte_sup_mem = CONT_PTE_SUP_MEM_SIZE;
 
 	if (!cont_pte_sup_prjname || !cont_pte_hugepage_enable ||
+	    !cmdline_chp_sup_bootmode ||
 	    phys_mem_sub_reserved_size < cont_pte_sup_mem) {
 		chp_logi("device does not support cont_pte_huge_page\n");
 		return;

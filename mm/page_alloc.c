@@ -3940,10 +3940,12 @@ void free_unref_page(struct page *page, unsigned int order)
 	 * excessively into the page allocator
 	 */
 	migratetype = pcpmigratetype = get_pcppage_migratetype(page);
+
 #ifdef CONFIG_OPLUS_FEATURE_UXMEM_OPT
 	if (uxmempool_refill(page, order, migratetype))
 		return;
 #endif
+
 	if (unlikely(migratetype > MIGRATE_RECLAIMABLE)) {
 		if (unlikely(is_migrate_isolate(migratetype))) {
 			free_one_page(page_zone(page), page, pfn, order, migratetype, FPI_NONE);
@@ -3955,6 +3957,7 @@ void free_unref_page(struct page *page, unsigned int order)
 			return;
 		}
 #endif
+
 		if (pcpmigratetype == MIGRATE_HIGHATOMIC)
 			pcpmigratetype = MIGRATE_MOVABLE;
 	}

@@ -1,17 +1,21 @@
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("//oplus/bazel:oplus_modules_define.bzl", _get_oplus_features_as_list = "get_oplus_features_as_list")
 
 def define_top_level_config(target):
     """Define common top-level variables in build.config"""
     rule_name = "{}_top_level_config".format(target)
+    oplus_features = _get_oplus_features_as_list()
     write_file(
         name = rule_name,
         out = "build.config.bazel.top.level.{}".format(target),
         content = [
             "# === define_top_level_config ===",
             "BUILDING_WITH_BAZEL=true",
+            ] + oplus_features +
+            [
             "# === end define_top_level_config ===",
-            "",  # Needed for newline at end of file
-        ],
+            "",
+            ],  # Needed for newline at end of file
     )
 
     return ":{}".format(rule_name)

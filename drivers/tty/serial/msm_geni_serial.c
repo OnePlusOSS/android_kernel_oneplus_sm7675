@@ -33,6 +33,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/dma-mapping.h>
 #include <uapi/linux/msm_geni_serial.h>
+#include <linux/pogo_common.h>
 
 static bool con_enabled = IS_ENABLED(CONFIG_SERIAL_MSM_GENI_CONSOLE_DEFAULT_ENABLED);
 
@@ -203,6 +204,22 @@ static bool con_enabled = IS_ENABLED(CONFIG_SERIAL_MSM_GENI_CONSOLE_DEFAULT_ENAB
 
 #define CREATE_TRACE_POINTS
 #include "serial_trace.h"
+
+static struct pogo_keyboard_operations pogo_keyboard_ops = {
+	.name = "pogo_keyboard_ops",
+	.init = NULL,
+	.write = NULL,
+	.recv = NULL,
+	.resume = NULL,
+	.suspend = NULL,
+	.remove = NULL,
+	.check = NULL,
+};
+struct pogo_keyboard_operations *get_pogo_keyboard_operations(void)
+{
+	return &pogo_keyboard_ops;
+}
+EXPORT_SYMBOL_GPL(get_pogo_keyboard_operations);
 
 /* FTRACE Logging */
 static void __ftrace_dbg(struct device *dev, const char *fmt, ...)
@@ -2402,6 +2419,12 @@ static void msm_geni_serial_start_tx(struct uart_port *uport)
 		pm_runtime_get(uport->dev);
 	}
 
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.write) {
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.write(NULL,1);
+		}
+	}
+
 	/*
 	 * If flush has been triggered earlier from userspace and port is
 	 * still active(not yet closed) then reset the flush_buffers flag.
@@ -3224,6 +3247,12 @@ static int msm_geni_serial_handle_dma_rx(struct uart_port *uport, bool drop_rx)
 		}
 	}
 
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.recv){
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.recv((unsigned char *)(msm_port->rx_buf), rx_bytes);
+		}
+	}
+
 	tport = &uport->state->port;
 	ret = tty_insert_flip_string(tport, (unsigned char *)(msm_port->rx_buf), rx_bytes);
 	rx_bytes_copied = ret;
@@ -3415,7 +3444,14 @@ static bool handle_tx_dma_xfer(u32 m_irq_status, struct uart_port *uport)
 				msm_geni_update_uart_error_code(msm_port, UART_ERROR_DEFAULT);
 			}
 		}
+	} else {
+		if(pogo_keyboard_ops.check && pogo_keyboard_ops.write) {
+			if(pogo_keyboard_ops.check(uport)) {
+				pogo_keyboard_ops.write(NULL, 0);
+			}
+		}
 	}
+
 	if (m_irq_status & (M_CMD_CANCEL_EN | M_CMD_ABORT_EN))
 		ret = true;
 	return ret;
@@ -3797,6 +3833,12 @@ static void msm_geni_serial_shutdown(struct uart_port *uport)
 	int ret = 0, i, timeout;
 	unsigned long long start_time;
 
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.init){
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.init(uport,0);
+		}
+	}
+
 	UART_LOG_DBG(msm_port->ipc_log_misc, uport->dev, "%s: %d\n", __func__, true);
 	msm_port->shutdown_in_progress = true;
 
@@ -4032,6 +4074,12 @@ exit_startup:
 		msm_geni_serial_power_off(&msm_port->uport);
 	msm_port->startup_in_progress = false;
 	UART_LOG_DBG(msm_port->ipc_log_misc, uport->dev, "%s: ret:%d\n", __func__, ret);
+
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.init){
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.init(uport,1);
+		}
+	}
 
 	return ret;
 }

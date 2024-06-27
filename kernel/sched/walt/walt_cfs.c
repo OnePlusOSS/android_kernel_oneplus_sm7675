@@ -4,6 +4,7 @@
  * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include "linux/cpumask.h"
 #include <linux/seq_file.h>
 #include <trace/hooks/sched.h>
 #include <trace/hooks/binder.h>
@@ -445,6 +446,15 @@ static void walt_find_best_target(struct sched_domain *sd,
 		cpumask_and(&visit_cpus, p->cpus_ptr,
 #endif
 				&cpu_array[order_index][cluster]);
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+		if (!is_state1() && cpumask_subset(&visit_cpus, &asym_cap_sibling_cpus)) {
+			if (cpumask_equal(&visit_cpus, &part_haltable_cpus)) {
+				cpumask_copy(&visit_cpus, &asym_cap_sibling_cpus);
+			} else {
+				continue;
+			}
+		}
+#endif
 
 		for_each_cpu(i, &visit_cpus) {
 			unsigned long capacity_orig = capacity_orig_of(i);
@@ -993,7 +1003,8 @@ int walt_find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 		if (cpumask_test_cpu(pipeline_cpu, p->cpus_ptr) &&
 				cpu_active(pipeline_cpu) &&
 				!cpu_halted(pipeline_cpu)) {
-			if (oplus_get_task_pipeline_cpu(cpu_rq(pipeline_cpu)->curr) == -1) {
+			if (!((pipeline_cpu == nr_cpu_ids - 1) && is_reserved(pipeline_cpu)) &&
+				!oplus_pipeline_low_latency_task(pipeline_cpu)) {
 				best_energy_cpu = pipeline_cpu;
 				fbt_env.fastpath = PIPELINE_FASTPATH;
 				goto out;

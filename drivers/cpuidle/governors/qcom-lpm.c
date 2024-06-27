@@ -806,22 +806,20 @@ static void lpm_disable_device(struct cpuidle_driver *drv,
 static void qcom_lpm_suspend_trace(void *unused, const char *action,
 				   int event, bool start)
 {
-
-	int cpu;
+        int cpu;
 
 	if (start && !strcmp("dpm_suspend_late", action)) {
 		suspend_in_progress = true;
+                for_each_online_cpu(cpu)
+		    wake_up_if_idle(cpu);
 
-		for_each_online_cpu(cpu)
-			wake_up_if_idle(cpu);
 		return;
 	}
-
 	if (!start && !strcmp("dpm_resume_early", action)) {
 		suspend_in_progress = false;
 
 		for_each_online_cpu(cpu)
-			wake_up_if_idle(cpu);
+                    wake_up_if_idle(cpu);
 	}
 }
 
