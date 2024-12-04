@@ -64,3 +64,11 @@ obj-$(CONFIG_GP_PCI1XXXX)	+= mchp_pci1xxxx/
 obj-$(CONFIG_VCPU_STALL_DETECTOR)	+= vcpu_stall_detector.o
 obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
 obj-$(CONFIG_QSEECOM_PROXY) 	+= qseecom_proxy.o
+#ifdef OPLUS_POWER_PROCS_LOAD
+obj-$(CONFIG_OPLUS_POWER_PROCS_LOAD) += oplus_procs_load/
+#endif /* OPLUS_POWER_PROCS_LOAD */
+#ifdef OPLUS_FEATURE_CHG_BASIC
+obj-$(CONFIG_AW8697_HAPTIC) += vibrator/aw8697_haptic/
+obj-$(CONFIG_SIH_VIBRATOR) += vibrator/si_haptic/
+#endif
+obj-$(CONFIG_OPLUS_POWER_NOTIFIER) += oplus_power_notifier/

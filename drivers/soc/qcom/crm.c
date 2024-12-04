@@ -569,7 +569,6 @@ static u32 crm_get_pwr_state_reg(int pwr_state)
 	return reg;
 }
 
-
 static int _crm_dump_drv_regs(struct crm_drv *drv)
 {
 	struct crm_vcd *vcd;
@@ -793,8 +792,6 @@ int crm_dump_drv_regs(const char *name, u32 drv_id)
 	return _crm_dump_drv_regs(drv);
 }
 EXPORT_SYMBOL_GPL(crm_dump_drv_regs);
-
-
 /**
  * crm_dump_regs() - Dump CRM registers for debug purposes.
  * @name:      The name of the crm device to dump for.
@@ -806,14 +803,14 @@ EXPORT_SYMBOL_GPL(crm_dump_drv_regs);
 int crm_dump_regs(const char *name)
 {
 	const struct device *dev;
-
+	
 	dev = crm_get_device(name);
 	if (IS_ERR(dev))
 		return -EINVAL;
-
 	return _crm_dump_regs(dev);
 }
 EXPORT_SYMBOL_GPL(crm_dump_regs);
+
 
 /**
  * crm_dump_regs() - Dump CRM registers for debug purposes.

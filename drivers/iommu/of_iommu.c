@@ -161,7 +161,6 @@ const struct iommu_ops *of_iommu_configure(struct device *dev,
 		ops    = fwspec->ops;
 	}
 	mutex_unlock(&iommu_probe_device_lock);
-
 	/*
 	 * If we have reason to believe the IOMMU driver missed the initial
 	 * probe for dev, replay it to get things in order.

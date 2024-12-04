@@ -309,11 +309,13 @@ unsigned int sched_get_cpu_util_pct(int cpu)
 	struct walt_rq *wrq = &per_cpu(walt_rq, cpu);
 
 	raw_spin_lock_irqsave(&rq->__lock, flags);
+	rq_lock_diagnostic(rq, true);
 
 	capacity = capacity_orig_of(cpu);
 
 	util = wrq->prev_runnable_sum + wrq->grp_time.prev_runnable_sum;
 	util = scale_time_to_util(util);
+	rq_lock_diagnostic(rq, false);
 	raw_spin_unlock_irqrestore(&rq->__lock, flags);
 
 	util = (util >= capacity) ? capacity : util;

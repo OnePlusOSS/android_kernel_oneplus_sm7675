@@ -17,6 +17,14 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/ipc_logging.h>
 #include "thermal_zone_internal.h"
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#include <linux/power_supply.h>
+#include <linux/proc_fs.h>
+#define CREATE_TRACE_POINTS
+#include "trace.h"
+#include <linux/rtc.h>
+#include <linux/time.h>
+#endif
 #include "qti_bcl_common.h"
 
 #define BCL_DRIVER_NAME       "bcl_pmic5"
@@ -124,9 +132,60 @@ static uint32_t bcl_ibat_ext_ranges[BCL_IBAT_RANGE_MAX] = {
 	20,
 	25
 };
+/*
+struct bcl_device;
+
+struct bcl_peripheral_data {
+	int                     irq_num;
+	int                     status_bit_idx;
+	long			trip_thresh;
+	int                     last_val;
+	struct mutex            state_trans_lock;
+	bool			irq_enabled;
+	enum bcl_dev_type	type;
+	struct thermal_zone_device_ops ops;
+	struct thermal_zone_device *tz_dev;
+	struct bcl_device	*dev;
+};
+
+struct bcl_device {
+	struct device			*dev;
+	struct regmap			*regmap;
+	uint16_t			fg_bcl_addr;
+	uint8_t				dig_major;
+	uint8_t				dig_minor;
+	uint8_t				ana_major;
+	uint8_t				bcl_param_1;
+	uint8_t				bcl_type;
+	void				*ipc_log;
+	bool				ibat_ccm_enabled;
+	bool				ibat_use_qg_adc;
+	bool				no_bit_shift;
+	uint32_t			ibat_ext_range_factor;
+	struct bcl_peripheral_data	param[BCL_TYPE_MAX];
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bool				support_track;
+	int				id;
+#endif
+};*/
 
 static struct bcl_device *bcl_devices[MAX_PERPH_COUNT];
 static int bcl_device_ct;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+struct timeval {
+	long tv_sec;
+	long tv_usec;
+};
+
+static void do_gettimeofday(struct timeval *tv)
+{
+	struct timespec64 now;
+
+	ktime_get_real_ts64(&now);
+	tv->tv_sec = now.tv_sec;
+	tv->tv_usec = now.tv_nsec/1000;
+}
+#endif
 
 static int bcl_read_multi_register(struct bcl_device *bcl_perph, int16_t reg_offset,
 				unsigned int *data, size_t len)
@@ -689,12 +748,58 @@ static irqreturn_t bcl_handle_irq(int irq, void *data)
 	struct bcl_bpm bpm_stat;
 	unsigned long long start_ts = 0, end_ts = 0;
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	struct timeval tv;
+	static struct power_supply *batt_psy;
+	union power_supply_propval psy = {0,};
+	int err = 0;
+	int vol = 0,curr = 0;
+	int level = -1,id = -1;
+	long time_s = 0;
+#endif
+
 	memset(&bpm_stat, 0, sizeof(bpm_stat));
 	if (!perph_data->tz_dev)
 		return IRQ_HANDLED;
 	bcl_perph = perph_data->dev;
 	bcl_lvl = perph_data->type - BCL_LVL0;
 	bcl_read_register(bcl_perph, BCL_IRQ_STATUS, &irq_status);
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if (bcl_perph->support_track) {
+		if (irq_status & 0x04) {
+			level = 2;
+		} else if (irq_status & 0x02) {
+			level = 1;
+		} else if (irq_status & 0x01) {
+			level = 0;
+		}
+		do_gettimeofday(&tv);
+		time_s = tv.tv_sec;
+		id = bcl_perph->id;
+		if (!batt_psy)
+			batt_psy = power_supply_get_by_name("battery");
+		if (batt_psy) {
+			err = power_supply_get_property(batt_psy,
+				POWER_SUPPLY_PROP_VOLTAGE_NOW, &psy);
+			if (err) {
+				pr_err("can't get battery voltage:%d\n",err);
+			} else {
+				vol = psy.intval / 1000;
+			}
+
+			err = power_supply_get_property(batt_psy,
+				POWER_SUPPLY_PROP_CURRENT_NOW, &psy);
+			if (err) {
+				pr_err("can't get battery current:%d\n",err);
+			} else {
+				curr = psy.intval;
+			}
+		}
+		trace_bcl_stat(time_s, id, level, vol, curr);
+	}
+#endif
+
 	if (bcl_perph->param[BCL_IBAT_LVL0].tz_dev)
 		bcl_read_ibat(bcl_perph->param[BCL_IBAT_LVL0].tz_dev, &ibat);
 	else if (bcl_perph->param[BCL_2S_IBAT_LVL0].tz_dev)
@@ -820,6 +925,11 @@ static int bcl_get_devicetree_data(struct platform_device *pdev,
 
 	ret = bcl_get_ibat_ext_range_factor(pdev,
 					&bcl_perph->ibat_ext_range_factor);
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bcl_perph->support_track =  of_property_read_bool(dev_node,"bcl,support_track");
+	pr_err("bcl support_track:%d, id:%d\n", bcl_perph->support_track, bcl_perph->id);
+#endif
 
 	return ret;
 }
@@ -1093,6 +1203,10 @@ static int bcl_probe(struct platform_device *pdev)
 	bcl_perph = bcl_devices[bcl_device_ct];
 	mutex_init(&bcl_perph->stats_lock);
 	bcl_perph->dev = &pdev->dev;
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bcl_perph->id = bcl_device_ct;
+#endif
 
 	bcl_perph->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!bcl_perph->regmap) {

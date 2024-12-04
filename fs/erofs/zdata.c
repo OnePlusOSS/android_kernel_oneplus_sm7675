@@ -337,6 +337,11 @@ static void z_erofs_free_pcluster(struct z_erofs_pcluster *pcl)
 }
 
 static struct workqueue_struct *z_erofs_workqueue __read_mostly;
+#ifdef CONFIG_BLOCKIO_UX_OPT
+static struct workqueue_struct *z_erofs_ux_workqueue __read_mostly;
+unsigned long erofs_decompress_ux = 0, erofs_decompress_set_ux = 0;
+extern bool should_queue_work_ux(struct bio *bio);
+#endif
 
 #ifdef CONFIG_EROFS_FS_PCPU_KTHREAD
 static struct kthread_worker __rcu **z_erofs_pcpu_workers;
@@ -459,6 +464,9 @@ void z_erofs_exit_zip_subsystem(void)
 	erofs_cpu_hotplug_destroy();
 	erofs_destroy_percpu_workers();
 	destroy_workqueue(z_erofs_workqueue);
+#ifdef CONFIG_BLOCKIO_UX_OPT
+	destroy_workqueue(z_erofs_ux_workqueue);
+#endif
 	z_erofs_destroy_pcluster_pool();
 }
 
@@ -469,6 +477,14 @@ int __init z_erofs_init_zip_subsystem(void)
 	if (err)
 		goto out_error_pcluster_pool;
 
+#ifdef CONFIG_BLOCKIO_UX_OPT
+	z_erofs_ux_workqueue = alloc_workqueue("erofs_worker_ux",
+			WQ_UNBOUND | WQ_HIGHPRI | WQ_UX | WQ_SYSFS, num_possible_cpus());
+	if (!z_erofs_ux_workqueue) {
+		err = -ENOMEM;
+		goto out_error_workqueue_init;
+	}
+#endif
 	z_erofs_workqueue = alloc_workqueue("erofs_worker",
 			WQ_UNBOUND | WQ_HIGHPRI, num_possible_cpus());
 	if (!z_erofs_workqueue) {
@@ -1423,13 +1439,31 @@ static void z_erofs_decompress_kickoff(struct z_erofs_decompressqueue *io,
 				z_erofs_pcpu_workers[raw_smp_processor_id()]);
 		if (!worker) {
 			INIT_WORK(&io->u.work, z_erofs_decompressqueue_work);
+
+#ifdef CONFIG_BLOCKIO_UX_OPT
+			if(io->sb->s_flags & SB_UX) {
+				erofs_decompress_ux++;
+				queue_work(z_erofs_ux_workqueue, &io->u.work);
+			} else {
+				queue_work(z_erofs_workqueue, &io->u.work);
+			}
+#else
 			queue_work(z_erofs_workqueue, &io->u.work);
+#endif
 		} else {
 			kthread_queue_work(worker, &io->u.kthread_work);
 		}
 		rcu_read_unlock();
 #else
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		if(io->sb->s_flags & SB_UX) {
+			queue_work(z_erofs_ux_workqueue, &io->u.work);
+		} else {
+			queue_work(z_erofs_workqueue, &io->u.work);
+		}
+#else
 		queue_work(z_erofs_workqueue, &io->u.work);
+#endif
 #endif
 		/* enable sync decompression for readahead */
 		if (sbi->opt.sync_decompress == EROFS_SYNC_DECOMPRESS_AUTO)
@@ -1608,7 +1642,6 @@ static void z_erofs_submissionqueue_endio(struct bio *bio)
 	blk_status_t err = bio->bi_status;
 	struct bio_vec *bvec;
 	struct bvec_iter_all iter_all;
-
 	bio_for_each_segment_all(bvec, bio, iter_all) {
 		struct page *page = bvec->bv_page;
 
@@ -1622,6 +1655,12 @@ static void z_erofs_submissionqueue_endio(struct bio *bio)
 	}
 	if (err)
 		q->eio = true;
+#ifdef CONFIG_BLOCKIO_UX_OPT
+	if (should_queue_work_ux(bio)) {
+		erofs_decompress_set_ux++;
+		q->sb->s_flags |= SB_UX;
+	}
+#endif
 	z_erofs_decompress_kickoff(q, -1);
 	bio_put(bio);
 }

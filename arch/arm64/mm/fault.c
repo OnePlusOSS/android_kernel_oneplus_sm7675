@@ -751,7 +751,7 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	trace_android_vh_try_fixup_sea(far, esr, regs, &can_fixup);
 	if (can_fixup && fixup_exception(regs))
 		return 0;
-
+	
 	inf = esr_to_fault_info(esr);
 
 	if (user_mode(regs) && apei_claim_sea(regs) == 0) {

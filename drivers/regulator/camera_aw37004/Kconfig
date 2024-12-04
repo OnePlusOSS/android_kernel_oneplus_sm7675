@@ -1,0 +1,7 @@
+config OPLUS_CAMERA_AW37004
+	tristate "config oplus camera_aw37004 software"
+	help
+	  Say Y here to support the AW37004 PMIC chip.
+	  This driver controls AW37004 PMIC chip and the voltage
+	  regulators found in Qualcomm Technologies Inc. AW37004
+	  PMIC.

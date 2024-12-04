@@ -9,6 +9,20 @@
 #include <walt.h>
 #include "trace.h"
 
+#ifdef CONFIG_OPLUS_ADD_CORE_CTRL_MASK
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+#include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_common.h>
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_fair.h>
+#endif
+#endif /* CONFIG_OPLUS_ADD_CORE_CTRL_MASK */
+
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 #ifdef CONFIG_HOTPLUG_CPU
 
 enum pause_type {
@@ -110,17 +124,15 @@ static void migrate_tasks(struct rq *dead_rq, struct rq_flags *rf)
 	/* note the clock update in orf */
 	orf.clock_update_flags |= RQCF_UPDATED;
 #endif
-
 	for (;;) {
 		/*
 		 * There's this thread running, bail when that's the only
 		 * remaining thread:
 		 */
+
 		if (rq->nr_running == 1)
 			break;
-
 		next = pick_migrate_task(rq);
-
 		/*
 		 * Argh ... no iterator for tasks, we need to remove the
 		 * kthread from the run-queue to continue.
@@ -621,10 +633,17 @@ static void android_rvh_set_cpus_allowed_by_task(void *unused,
 	if (unlikely(walt_disabled))
 		return;
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (bm_set_cpus_allowed_by_task(cpu_valid_mask, new_mask, p, dest_cpu))
+		return;
+#endif
+
 	/* allow kthreads to change affinity regardless of halt status of dest_cpu */
 	if (p->flags & PF_KTHREAD)
 		return;
-
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	android_rvh_set_cpus_allowed_by_task_handler(unused, cpu_valid_mask, new_mask, p, dest_cpu);
+#endif
 	if (cpu_halted(*dest_cpu) && !p->migration_disabled) {
 		cpumask_t allowed_cpus;
 
@@ -708,6 +727,10 @@ static void android_rvh_is_cpu_allowed(void *unused, struct task_struct *p, int 
 			*allowed = true;
 		}
 	}
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (test_benchmark_task(p))
+		*allowed = true;
+#endif
 }
 
 void walt_halt_init(void)
@@ -721,6 +744,16 @@ void walt_halt_init(void)
 	}
 
 	sched_setscheduler_nocheck(walt_drain_thread, SCHED_FIFO, &param);
+
+#ifdef CONFIG_OPLUS_ADD_CORE_CTRL_MASK
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	init_fbg_halt_mask(&__cpu_halt_mask);
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	init_ux_halt_mask(&__cpu_halt_mask);
+#endif
+#endif /* CONFIG_OPLUS_ADD_CORE_CTRL_MASK */
 
 	register_trace_android_rvh_get_nohz_timer_target(android_rvh_get_nohz_timer_target, NULL);
 	register_trace_android_rvh_set_cpus_allowed_by_task(

@@ -10,6 +10,7 @@
 #define TRACE_SYSTEM qcom_lpm
 
 #include <linux/tracepoint.h>
+#include <trace/hooks/vendor_hooks.h>
 
 TRACE_EVENT(lpm_gov_select,
 

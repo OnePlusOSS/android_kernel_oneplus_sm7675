@@ -23,6 +23,10 @@
 
 #include <linux/ipc_logging.h>
 
+#ifdef CONFIG_OPLUS_FEATURE_SMP2P_STATS
+#include "smp2p_stats.h"
+#endif
+
 /*
  * The Shared Memory Point to Point (SMP2P) protocol facilitates communication
  * of a single 32-bit value between two processors.  Each value has a single
@@ -280,7 +284,12 @@ static void qcom_smp2p_notify_in(struct qcom_smp2p *smp2p)
 
 		SMP2P_INFO("%d:\t%s: status:%0lx val:%0x\n",
 			   smp2p->remote_pid, entry->name, status, val);
+		dev_err(smp2p->dev, "%d:\t%s: status:%0lx val:%0x rising %x, falling %x\n",
+				smp2p->remote_pid, entry->name, status, val, entry->irq_rising, entry->irq_falling);
 
+#ifdef CONFIG_OPLUS_FEATURE_SMP2P_STATS
+		update_smp2p_stats_info(smp2p->local_pid, smp2p->remote_pid, val >> SENSOR_TYPE_SHIFT);
+#endif
 		/* No changes of this entry? */
 		if (!status)
 			continue;
@@ -593,6 +602,10 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 	smp2p->dev = &pdev->dev;
 	INIT_LIST_HEAD(&smp2p->inbound);
 	INIT_LIST_HEAD(&smp2p->outbound);
+
+#ifdef CONFIG_OPLUS_FEATURE_SMP2P_STATS
+	create_oplus_smp2p_node();
+#endif
 
 	platform_set_drvdata(pdev, smp2p);
 

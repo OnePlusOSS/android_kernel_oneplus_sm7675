@@ -3108,24 +3108,38 @@ int gpi_terminate_all(struct dma_chan *chan)
 
 		/* send command to Stop the channel */
 		ret = gpi_send_cmd(gpii, gpii_chan, GPI_CH_CMD_STOP);
-		if (ret) {
+		if (ret)
 			GPII_ERR(gpii, gpii_chan->chid,
 				 "Error Stopping Chan:%d resetting\n", ret);
-			ret = gpi_reset_chan(gpii_chan, GPI_CH_CMD_RESET);
-			if (ret) {
-				GPII_ERR(gpii, gpii_chan->chid,
-					 "Error resetting channel ret:%d\n", ret);
-				if (!gpii->reg_table_dump) {
-					gpi_dump_debug_reg(gpii);
-					gpii->reg_table_dump = true;
-				}
-				goto terminate_exit;
+	}
+
+	/* reset the channels (clears any pending tre) */
+	for (i = schid; i < echid; i++) {
+		gpii_chan = &gpii->gpii_chan[i];
+
+		ret = gpi_reset_chan(gpii_chan, GPI_CH_CMD_RESET);
+		if (ret) {
+			GPII_ERR(gpii, gpii_chan->chid,
+				 "Error resetting channel ret:%d\n", ret);
+			if (!gpii->reg_table_dump) {
+				gpi_dump_debug_reg(gpii);
+				gpii->reg_table_dump = true;
+
 			}
+			goto terminate_exit;
+		}
+
+		/* reprogram channel CNTXT */
+		ret = gpi_alloc_chan(gpii_chan, false);
+		if (ret) {
+			GPII_ERR(gpii, gpii_chan->chid,
+				 "Error alloc_channel ret:%d\n", ret);
+			goto terminate_exit;
 		}
 	}
 
 	/* restart the channels */
-	for (i = echid - 1; i >= schid; i--) {
+	for (i = schid; i < echid; i++) {
 		gpii_chan = &gpii->gpii_chan[i];
 
 		ret = gpi_start_chan(gpii_chan);

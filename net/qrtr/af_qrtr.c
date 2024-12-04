@@ -145,10 +145,12 @@ u32 qrtr_ports_next = QRTR_MIN_EPH_SOCKET;
 static DEFINE_SPINLOCK(qrtr_port_lock);
 
 /* backup buffers */
-#define QRTR_BACKUP_HI_NUM	5
+/* #ifdef OPLUS_FEATURE_SENSOR */
+#define QRTR_BACKUP_HI_NUM	20
 #define QRTR_BACKUP_HI_SIZE	SZ_16K
-#define QRTR_BACKUP_LO_NUM	20
+#define QRTR_BACKUP_LO_NUM	80
 #define QRTR_BACKUP_LO_SIZE	SZ_1K
+// #endif
 static struct sk_buff_head qrtr_backup_lo;
 static struct sk_buff_head qrtr_backup_hi;
 static struct work_struct qrtr_backup_work;

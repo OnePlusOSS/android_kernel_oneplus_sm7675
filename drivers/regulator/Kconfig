@@ -1657,4 +1657,6 @@ config VIRTIO_REGULATOR
 	  regulator for pass through peripheral devices via regulator backend in
 	  host.
 
+source "drivers/regulator/camera_aw37004/Kconfig"
+
 endif

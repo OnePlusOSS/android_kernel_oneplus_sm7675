@@ -689,6 +689,7 @@ get_temp:
 			s->tzd->type, temp);
 
 dump_and_exit:
+	if (*temp < 60000) return 0;
 	if (s->tzd)
 		TSENS_DBG(priv, "Sensor_id: %d name:%s temp: %d",
 				hw_id, s->tzd->type, *temp);

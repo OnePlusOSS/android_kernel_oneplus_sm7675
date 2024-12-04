@@ -183,6 +183,10 @@ config QCOM_LLCC
 	  SDM845. This provides interfaces to clients that use the LLCC.
 	  Say yes here to enable LLCC slice driver.
 
+config OPLUS_GAME_LLCC
+	tristate "oplus llcc game control"
+	depends on QCOM_LLCC
+
 config QCOM_KRYO_L2_ACCESSORS
 	bool
 	depends on ARCH_QCOM && ARM64 || COMPILE_TEST
@@ -395,6 +399,13 @@ config QCOM_SMP2P
 	help
 	  Say yes here to support the Qualcomm Shared Memory Point to Point
 	  protocol.
+
+config OPLUS_FEATURE_SMP2P_STATS
+	bool "Qualcomm Shared Memory Point to Point statistics"
+	default y
+	help
+		Say yes here to support the Qualcomm Shared Memory Point to Point
+		statistics.
 
 config QCOM_SMSM
 	tristate "Qualcomm Shared Memory State Machine"
@@ -665,7 +676,7 @@ config QCOM_WATCHDOG_BARK_TIME
 	depends on QCOM_WDT_CORE
 	int "Qualcomm Technologies, Inc. Watchdog bark time in ms"
 	default 11000
-	range 11000 11000
+	range 11000 22000
 	help
 	  The amount of time, in milliseconds, that should elapse after
 	  a watchdog timer reset before a bark interrupt is sent from the
@@ -1025,6 +1036,12 @@ config MINIDUMP_MAX_ENTRIES
 	help
 	  This defines maximum number of entries to be allocated for application
 	  subsytem in Minidump table.
+
+config OPLUS_POWERINFO_RPMH
+	bool "powerinfo rpmh config"
+	default n
+	help
+	  Select this config to enable powerinfo rpmh
 
 config QCOM_ADSP_SLEEPMON
 	tristate "ADSP sleep monitor"

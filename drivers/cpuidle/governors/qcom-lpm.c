@@ -66,6 +66,8 @@ static bool lpm_disallowed(s64 sleep_ns, int cpu)
 	struct lpm_cpu *cpu_gov = per_cpu_ptr(&lpm_cpu_data, cpu);
 	uint64_t bias_time = 0;
 #endif
+        if(suspend_in_progress)
+		return true;
 
 	if (suspend_in_progress)
 		return true;
@@ -75,7 +77,6 @@ static bool lpm_disallowed(s64 sleep_ns, int cpu)
 
 	if ((sleep_disabled || sleep_ns < 0))
 		return true;
-
 #if IS_ENABLED(CONFIG_SCHED_WALT)
 	if (!sched_lpm_disallowed_time(cpu, &bias_time)) {
 		cpu_gov->last_idx = 0;
@@ -804,21 +805,20 @@ static void lpm_disable_device(struct cpuidle_driver *drv,
 static void qcom_lpm_suspend_trace(void *unused, const char *action,
 				   int event, bool start)
 {
-	int cpu;
+        int cpu;
 
 	if (start && !strcmp("dpm_suspend_late", action)) {
 		suspend_in_progress = true;
+                for_each_online_cpu(cpu)
+		    wake_up_if_idle(cpu);
 
-		for_each_online_cpu(cpu)
-			wake_up_if_idle(cpu);
 		return;
 	}
-
 	if (!start && !strcmp("dpm_resume_early", action)) {
 		suspend_in_progress = false;
 
 		for_each_online_cpu(cpu)
-			wake_up_if_idle(cpu);
+                    wake_up_if_idle(cpu);
 	}
 }
 

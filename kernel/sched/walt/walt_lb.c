@@ -8,6 +8,22 @@
 
 #include "walt.h"
 #include "trace.h"
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+#include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_LOADBALANCE)
+#include <../../oplus_cpu/sched/sched_assist/sa_balance.h>
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_ABNORMAL_FLAG)
+#include <linux/task_overload.h>
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_common.h>
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_pipeline.h>
+#endif
 
 static inline unsigned long walt_lb_cpu_util(int cpu)
 {
@@ -41,6 +57,7 @@ static int stop_walt_lb_active_migration(void *data)
 	int push_task_detached = 0;
 
 	raw_spin_lock_irq(&busiest_rq->__lock);
+	rq_lock_diagnostic(busiest_rq, true);
 	push_task = wrq->push_task;
 
 	/* sanity checks before initiating the pull */
@@ -70,11 +87,14 @@ out_unlock: /* called with busiest_rq lock */
 	target_cpu = busiest_rq->push_cpu;
 	clear_reserved(target_cpu);
 	wrq->push_task = NULL;
+	rq_lock_diagnostic(busiest_rq, false);
 	raw_spin_unlock(&busiest_rq->__lock);
 
 	if (push_task_detached) {
 		raw_spin_lock(&target_rq->__lock);
+		rq_lock_diagnostic(target_rq, true);
 		walt_attach_task(push_task, target_rq);
+		rq_lock_diagnostic(target_rq, false);
 		raw_spin_unlock(&target_rq->__lock);
 	}
 
@@ -110,8 +130,12 @@ static void walt_lb_rotate_work_func(struct work_struct *work)
 
 	local_irq_save(flags);
 	double_rq_lock(src_rq, dst_rq);
+	rq_lock_diagnostic(src_rq, true);
+	rq_lock_diagnostic(dst_rq, true);
 	dst_rq->active_balance = 0;
 	src_rq->active_balance = 0;
+	rq_lock_diagnostic(src_rq, false);
+	rq_lock_diagnostic(dst_rq, false);
 	double_rq_unlock(src_rq, dst_rq);
 	local_irq_restore(flags);
 
@@ -188,6 +212,10 @@ static void walt_lb_check_for_rotation(struct rq *src_rq)
 		if (rq->nr_running > 1)
 			continue;
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+		if (fbg_skip_migration(rq->curr, i, src_cpu))
+			continue;
+#endif
 		wts = (struct walt_task_struct *) rq->curr->android_vendor_data1;
 		run = wc - wts->last_enqueued_ts;
 
@@ -206,6 +234,8 @@ static void walt_lb_check_for_rotation(struct rq *src_rq)
 	dst_rq = cpu_rq(dst_cpu);
 
 	double_rq_lock(src_rq, dst_rq);
+	rq_lock_diagnostic(src_rq, true);
+	rq_lock_diagnostic(dst_rq, true);
 	if (walt_fair_task(dst_rq->curr) &&
 		!src_rq->active_balance && !dst_rq->active_balance &&
 		cpumask_test_cpu(dst_cpu, src_rq->curr->cpus_ptr) &&
@@ -226,6 +256,8 @@ static void walt_lb_check_for_rotation(struct rq *src_rq)
 		dst_rq->active_balance = 1;
 		src_rq->active_balance = 1;
 	}
+	rq_lock_diagnostic(src_rq, false);
+	rq_lock_diagnostic(dst_rq, false);
 	double_rq_unlock(src_rq, dst_rq);
 
 	if (wr)
@@ -263,6 +295,11 @@ static inline bool _walt_can_migrate_task(struct task_struct *p, int dst_cpu,
 	/* Don't detach task if dest cpu is halted */
 	if (cpu_halted(dst_cpu))
 		return false;
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+	if (oplus_pipeline_task_skip_cpu(p, dst_cpu))
+		return false;
+#endif
 
 	return true;
 }
@@ -319,6 +356,7 @@ static int walt_lb_pull_tasks(int dst_cpu, int src_cpu, struct task_struct **pul
 	to_higher = check_for_higher_capacity(dst_cpu, src_cpu);
 
 	raw_spin_lock_irqsave(&src_rq->__lock, flags);
+	rq_lock_diagnostic(src_rq, true);
 
 	pull_me = NULL;
 	task_visited = 0;
@@ -401,6 +439,7 @@ static int walt_lb_pull_tasks(int dst_cpu, int src_cpu, struct task_struct **pul
 				mark_reserved(dst_cpu);
 
 				/* lock must be dropped before waking the stopper */
+				rq_lock_diagnostic(src_rq, false);
 				raw_spin_unlock_irqrestore(&src_rq->__lock, flags);
 
 				/*
@@ -422,13 +461,16 @@ static int walt_lb_pull_tasks(int dst_cpu, int src_cpu, struct task_struct **pul
 	}
 unlock:
 	/* lock must be dropped before waking the stopper */
+	rq_lock_diagnostic(src_rq, false);
 	raw_spin_unlock_irqrestore(&src_rq->__lock, flags);
 
 	if (!pull_me)
 		return 0;
 
 	raw_spin_lock_irqsave(&dst_rq->__lock, flags);
+	rq_lock_diagnostic(dst_rq, true);
 	walt_attach_task(pull_me, dst_rq);
+	rq_lock_diagnostic(dst_rq, false);
 	raw_spin_unlock_irqrestore(&dst_rq->__lock, flags);
 
 	*pulled_task_struct = pull_me;
@@ -675,10 +717,25 @@ void walt_lb_tick(struct rq *rq)
 	unsigned long flags;
 	struct walt_rq *prev_wrq = &per_cpu(walt_rq, cpu_of(rq));
 	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	bool need_up_migrate = false;
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_LOADBALANCE)
+	if (__oplus_tick_balance(NULL, rq))
+		return;
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	if (fbg_need_up_migration(p, rq))
+		need_up_migrate = true;
+#endif
 
 	raw_spin_lock(&rq->__lock);
+	rq_lock_diagnostic(rq, true);
 	if (available_idle_cpu(prev_cpu) && is_reserved(prev_cpu) && !rq->active_balance)
 		clear_reserved(prev_cpu);
+	rq_lock_diagnostic(rq, false);
 	raw_spin_unlock(&rq->__lock);
 
 	if (!walt_fair_task(p))
@@ -686,7 +743,15 @@ void walt_lb_tick(struct rq *rq)
 
 	walt_cfs_tick(rq);
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_ABNORMAL_FLAG)
+	test_task_overload(p);
+#endif /* #OPLUS_FEATURE_ABNORMAL_FLAG */
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	if (!rq->misfit_task_load && !need_up_migrate)
+#else
 	if (!rq->misfit_task_load)
+#endif
 		return;
 
 	if (READ_ONCE(p->__state) != TASK_RUNNING || p->nr_cpus_allowed == 1)
@@ -714,7 +779,9 @@ void walt_lb_tick(struct rq *rq)
 		goto out_unlock;
 
 	raw_spin_lock(&rq->__lock);
+	rq_lock_diagnostic(rq, true);
 	if (rq->active_balance) {
+		rq_lock_diagnostic(rq, false);
 		raw_spin_unlock(&rq->__lock);
 		goto out_unlock;
 	}
@@ -722,6 +789,7 @@ void walt_lb_tick(struct rq *rq)
 	rq->push_cpu = new_cpu;
 	get_task_struct(p);
 	prev_wrq->push_task = p;
+	rq_lock_diagnostic(rq, false);
 	raw_spin_unlock(&rq->__lock);
 
 	mark_reserved(new_cpu);
@@ -803,6 +871,11 @@ static bool walt_balance_rt(struct rq *this_rq)
 			wallclock - wts->last_wake_ts < WALT_RT_PULL_THRESHOLD_NS)
 		goto unlock;
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	if (!fbg_rt_task_fits_capacity(p, this_cpu))
+		goto unlock;
+#endif
+
 	pulled = true;
 	deactivate_task(src_rq, p, 0);
 	set_task_cpu(p, this_cpu);
@@ -847,6 +920,11 @@ static void walt_newidle_balance(struct rq *this_rq,
 	int i;
 	struct task_struct *pulled_task_struct = NULL;
 	struct walt_sched_cluster *cluster;
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_LOADBALANCE)
+	if (__oplus_newidle_balance(NULL, this_rq, rf, pulled_task, done))
+		return;
+#endif
 
 	if (unlikely(walt_disabled))
 		return;
@@ -989,9 +1067,11 @@ void walt_smp_newidle_balance(void *ignored)
 	int done = 0;
 
 	rq_lock(rq, &rf);
+	rq_lock_diagnostic(rq, true);
 	update_rq_clock(rq);
 	walt_newidle_balance(rq, &rf, &pulled_task, &done, true);
 	resched_curr(rq);
+	rq_lock_diagnostic(rq, false);
 	rq_unlock(rq, &rf);
 }
 

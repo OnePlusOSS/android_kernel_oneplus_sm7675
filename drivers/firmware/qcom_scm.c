@@ -73,7 +73,6 @@ struct qcom_scm {
 
 DEFINE_SEMAPHORE(qcom_scm_sem_lock);
 
-
 #define QCOM_SCM_FLAG_COLDBOOT_CPU0	0x00
 #define QCOM_SCM_FLAG_COLDBOOT_CPU1	0x01
 #define QCOM_SCM_FLAG_COLDBOOT_CPU2	0x08
@@ -3067,7 +3066,7 @@ static int __qcom_multi_smc_init(struct qcom_scm *__scm,
 		if (!ret)
 			sema_init(&qcom_scm_sem_lock,
 					(int)__scm->waitq.call_ctx_cnt);
-	}
+        }
 
 	return ret;
 }

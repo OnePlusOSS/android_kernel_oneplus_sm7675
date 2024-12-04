@@ -23,6 +23,14 @@
 
 #define MSEC_TO_NSEC (1000 * 1000)
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_fair.h>
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+#include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
+#endif
+
 #ifdef CONFIG_HZ_300
 /*
  * Tick interval becomes to 3333333 due to
@@ -44,6 +52,7 @@
 
 extern bool walt_disabled;
 extern bool waltgov_disabled;
+extern bool uaggov_disabled;
 
 enum task_event {
 	PUT_PREV_TASK	= 0,
@@ -134,6 +143,10 @@ struct walt_rq {
 	u64			old_estimated_time;
 	u64			curr_runnable_sum;
 	u64			prev_runnable_sum;
+#ifdef CONFIG_HMBIRD_SCHED
+	u64			curr_runnable_sum_fixed;
+	u64			prev_runnable_sum_fixed;
+#endif
 	u64			nt_curr_runnable_sum;
 	u64			nt_prev_runnable_sum;
 	struct group_cpu_time	grp_time;
@@ -194,6 +207,7 @@ extern cpumask_t cpus_paused_by_us;
 extern cpumask_t cpus_part_paused_by_us;
 /*END SCHED.H PORT*/
 
+extern u64 walt_sched_clock(void);
 extern int num_sched_clusters;
 extern int nr_big_cpus;
 extern unsigned int sched_capacity_margin_up[WALT_NR_CPUS];
@@ -277,6 +291,9 @@ extern unsigned int sysctl_ed_boost_pct;
 extern unsigned int sysctl_em_inflate_pct;
 extern unsigned int sysctl_em_inflate_thres;
 extern unsigned int sysctl_sched_heavy_nr;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_PIPELINE)
+extern unsigned int enable_pipeline_boost;
+#endif
 
 extern int cpufreq_walt_set_adaptive_freq(unsigned int cpu, unsigned int adaptive_low_freq,
 					  unsigned int adaptive_high_freq);
@@ -297,10 +314,24 @@ extern unsigned int high_perf_cluster_freq_cap[MAX_CLUSTERS];
 extern unsigned int fmax_cap[MAX_FREQ_CAP][MAX_CLUSTERS];
 extern int sched_dynamic_tp_handler(struct ctl_table *table, int write,
 			void __user *buffer, size_t *lenp, loff_t *ppos);
+
+#ifdef CONFIG_OPLUS_FEATURE_SUGOV_TL
+extern unsigned int get_targetload(struct cpufreq_policy *policy);
+#endif /* CONFIG_OPLUS_FEATURE_SUGOV_TL */
+
 extern struct freq_relation_map relation_data[MAX_CLUSTERS][MAX_FREQ_RELATIONS];
 extern struct list_head cluster_head;
 #define for_each_sched_cluster(cluster) \
 	list_for_each_entry_rcu(cluster, &cluster_head, list)
+
+#if IS_ENABLED(CONFIG_SCHED_WALT_DEBUG)
+extern bool walt_lock_diagnostic_enable(void);
+#else
+static inline bool walt_lock_diagnostic_enable(void)
+{
+	return false;
+}
+#endif
 
 static inline struct walt_sched_cluster *cpu_cluster(int cpu)
 {
@@ -380,6 +411,9 @@ extern cpumask_t cpus_for_pipeline;
 #define WALT_CPUFREQ_BOOST_UPDATE	0x20
 #define WALT_CPUFREQ_ASYM_FIXUP		0x40
 #define WALT_CPUFREQ_SHARED_RAIL	0x80
+#if IS_ENABLED(CONFIG_OPLUS_CPUFREQ_IOWAIT_PROTECT)
+#define WALT_CPUFREQ_IOWAIT     (1U << 10)
+#endif
 
 #define CPUFREQ_REASON_LOAD		0
 #define CPUFREQ_REASON_BTR		0x1
@@ -555,6 +589,11 @@ static inline bool rt_boost_on_big(void)
 static inline bool is_full_throttle_boost(void)
 {
 	return sched_boost_type == FULL_THROTTLE_BOOST;
+}
+
+static inline bool is_conservative_boost(void)
+{
+	return sched_boost_type == CONSERVATIVE_BOOST;
 }
 
 static inline bool is_storage_boost(void)
@@ -1060,6 +1099,16 @@ static inline bool is_state1(void)
 /* determine if this task should be allowed to use a partially halted cpu */
 static inline bool task_reject_partialhalt_cpu(struct task_struct *p, int cpu)
 {
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	if (!task_tpd_check(p, cpu))
+		return true;
+	if (should_ux_task_skip_cpu(p, cpu))
+		return true;
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	if (fbg_skip_migration(p, task_cpu(p), cpu))
+		return true;
+#endif
 	if (p->prio < MAX_RT_PRIO)
 		return false;
 
@@ -1149,7 +1198,7 @@ static inline bool has_internal_freq_limit_changed(struct walt_sched_cluster *cl
 	internal_freq = cluster->walt_internal_freq_limit;
 	cluster->walt_internal_freq_limit = cluster->max_freq;
 
-	if (likely(!waltgov_disabled)) {
+	if (likely(!waltgov_disabled) || (!uaggov_disabled)) {
 		for (i = 0; i < MAX_FREQ_CAP; i++)
 			cluster->walt_internal_freq_limit = min(fmax_cap[i][cluster->id],
 					     cluster->walt_internal_freq_limit);
@@ -1245,6 +1294,61 @@ static inline bool is_walt_sentinel(void)
 		}								\
 	}									\
 })
+
+/* RQ lock diagnostic */
+struct rq_lock_diag {
+	atomic_t last_cpu;
+	pid_t owner_task;
+	pid_t free_task;
+	void *caller[3];
+	atomic_t locked;
+};
+extern struct rq_lock_diag walt_rq_lock_diag_data[WALT_NR_CPUS]; //embed in wrq ?
+static inline void rq_lock_diagnostic(struct rq *rq, bool lock)
+{
+
+	int curr_cpu, cpu;
+	struct rq_lock_diag *tmp;
+
+	if (likely(!walt_lock_diagnostic_enable()))
+		return;
+
+	cpu = cpu_of(rq);
+	tmp = &walt_rq_lock_diag_data[cpu];
+	curr_cpu = raw_smp_processor_id();
+
+
+	if (lock) {
+		if (atomic_read(&tmp->locked))
+			goto panic;
+
+		tmp->owner_task = current->pid;
+		tmp->free_task = -1;
+		atomic_set(&tmp->last_cpu, curr_cpu);
+	} else {
+		if (!atomic_read(&tmp->locked) ||
+		    (atomic_read(&tmp->last_cpu) != curr_cpu))
+			goto panic;
+
+		tmp->owner_task = -1;
+		tmp->free_task = current->pid;
+		atomic_set(&tmp->last_cpu, -1);
+	}
+
+	tmp->caller[0] = (void *)CALLER_ADDR0;
+	tmp->caller[1] = (void *)CALLER_ADDR1;
+	tmp->caller[2] = (void *)CALLER_ADDR2;
+	atomic_set(&tmp->locked, lock ? 1 : 0);
+
+	return;
+
+panic:
+	WALT_BUG(WALT_BUG_WALT, current,
+		 "Already request=%d lock=%d last_cpu=%d curr_cpu=%d task=%d owner_task=%d free_task=%d flow=[ %pS <= %pS <= %pS ]\n",
+		 lock, atomic_read(&tmp->locked), atomic_read(&tmp->last_cpu), curr_cpu,
+		 current->pid, tmp->owner_task, tmp->free_task,
+		 tmp->caller[0], tmp->caller[1], tmp->caller[2]);
+}
 
 static inline void walt_lockdep_assert(int cond, int cpu, struct task_struct *p)
 {

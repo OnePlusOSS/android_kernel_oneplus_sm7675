@@ -2,6 +2,8 @@ load(":target_variants.bzl", "la_variants")
 load(":msm_kernel_la.bzl", "define_msm_la")
 load(":image_opts.bzl", "boot_image_opts")
 
+load("//oplus/bazel:oplus_modules_define.bzl", _get_oplus_features = "oplus_ddk_get_oplus_features")
+
 target_name = "pineapple"
 
 def define_pineapple():
@@ -76,6 +78,12 @@ def define_pineapple():
         "drivers/iio/adc/qti-glink-adc.ko",
         "drivers/input/misc/pm8941-pwrkey.ko",
         "drivers/input/misc/qcom-hv-haptics.ko",
+        "drivers/misc/vibrator/aw8697_haptic/haptic_feedback.ko",
+        "drivers/misc/vibrator/aw8697_haptic/haptic.ko",
+        "drivers/misc/vibrator/aw8697_haptic/aw8697.ko",
+        "drivers/misc/vibrator/si_haptic/si_haptic.ko",
+        "drivers/input/misc/qpnp-power-on.ko",
+        "drivers/leds/aw20198/leds-aw20198.ko",
         "drivers/interconnect/icc-test.ko",
         "drivers/interconnect/qcom/icc-bcm-voter.ko",
         "drivers/interconnect/qcom/icc-debug.ko",
@@ -120,7 +128,11 @@ def define_pineapple():
         "drivers/power/reset/qcom-pon.ko",
         "drivers/power/reset/qcom-reboot-reason.ko",
         "drivers/power/reset/reboot-mode.ko",
-        "drivers/power/supply/qti_battery_charger.ko",
+        #"drivers/power/supply/qti_battery_charger.ko",
+        "drivers/power/oplus/wireless_pen/oplus_wireless_pen.ko",
+        "drivers/power/oplus/v2/oplus_chg_v2.ko",
+        "drivers/power/oplus/test-kit/test-kit.ko",
+        "drivers/power/oplus/v2/ufcs/ufcs_class.ko",
         "drivers/pwm/pwm-qti-lpg.ko",
         "drivers/regulator/debug-regulator.ko",
         "drivers/regulator/proxy-consumer.ko",
@@ -131,6 +143,7 @@ def define_pineapple():
         "drivers/regulator/qti-ocp-notifier.ko",
         "drivers/regulator/rpmh-regulator.ko",
         "drivers/regulator/stub-regulator.ko",
+        "drivers/regulator/camera_aw37004/oplus_camera_aw37004.ko",
         "drivers/remoteproc/qcom_pil_info.ko",
         "drivers/remoteproc/qcom_q6v5.ko",
         "drivers/remoteproc/qcom_q6v5_pas.ko",
@@ -165,13 +178,13 @@ def define_pineapple():
         "drivers/soc/qcom/dcvs/dynpf_scmi.ko",
         "drivers/soc/qcom/dcvs/memlat.ko",
         "drivers/soc/qcom/dcvs/mpam.ko",
+        "drivers/soc/qcom/dcvs/mpam_game.ko",
         "drivers/soc/qcom/dcvs/qcom-dcvs.ko",
         "drivers/soc/qcom/dcvs/qcom-pmu-lib.ko",
         "drivers/soc/qcom/dcvs/qcom_scmi_client.ko",
         "drivers/soc/qcom/debug_symbol.ko",
         "drivers/soc/qcom/dmesg_dumper.ko",
         "drivers/soc/qcom/eud.ko",
-        "drivers/soc/qcom/fsa4480-i2c.ko",
         "drivers/soc/qcom/gh_cpusys_vm_mem_access.ko",
         "drivers/soc/qcom/gh_tlmm_vm_mem_access.ko",
         "drivers/soc/qcom/gic_intr_routing.ko",
@@ -216,7 +229,7 @@ def define_pineapple():
         "drivers/soc/qcom/qti_battery_debug.ko",
         "drivers/soc/qcom/secure_buffer.ko",
         "drivers/soc/qcom/smem.ko",
-        "drivers/soc/qcom/smp2p.ko",
+        "drivers/soc/qcom/oplus_smp2p.ko",
         "drivers/soc/qcom/smp2p_sleepstate.ko",
         "drivers/soc/qcom/socinfo.ko",
         "drivers/soc/qcom/sps/sps_drv.ko",
@@ -224,6 +237,7 @@ def define_pineapple():
         "drivers/soc/qcom/sysmon_subsystem_stats.ko",
         "drivers/soc/qcom/tmecom/tmecom-intf.ko",
         "drivers/soc/qcom/wcd_usbss_i2c.ko",
+        "drivers/soc/qcom/fsa4480-i2c.ko",
         "drivers/spi/spi-msm-geni.ko",
         "drivers/spmi/spmi-pmic-arb.ko",
         "drivers/spmi/spmi-pmic-arb-debug.ko",
@@ -255,6 +269,7 @@ def define_pineapple():
         "drivers/usb/gadget/function/usb_f_ccid.ko",
         "drivers/usb/gadget/function/usb_f_cdev.ko",
         "drivers/usb/gadget/function/usb_f_gsi.ko",
+        "drivers/usb/gadget/function/usb_f_rndis.ko",
         "drivers/usb/gadget/function/usb_f_qdss.ko",
         "drivers/usb/phy/phy-generic.ko",
         "drivers/usb/phy/phy-msm-snps-eusb2.ko",
@@ -278,6 +293,7 @@ def define_pineapple():
         "drivers/virt/gunyah/gunyah_loader.ko",
         "drivers/virt/gunyah/gunyah_qcom.ko",
         "kernel/msm_sysstats.ko",
+        "kernel/sched/walt/sched-penalty.ko",
         "kernel/sched/walt/sched-walt.ko",
         "kernel/trace/qcom_ipc_logging.ko",
         "lib/crc-itu-t.ko",
@@ -289,7 +305,59 @@ def define_pineapple():
         "net/wireless/cfg80211.ko",
         "sound/soc/codecs/snd-soc-hdmi-codec.ko",
         "sound/usb/snd-usb-audio-qmi.ko",
+        "drivers/soc/oplus/multimedia/oplus_mm_kevent.ko",
+        "drivers/soc/oplus/multimedia/oplus_mm_kevent_fb.ko",
+        "drivers/soc/oplus/trackpoint/oplus_trackpoint_report.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/oplusboot.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/oplus_ftm_mode.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/buildvariant.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/cdt_integrity.ko",
+        "drivers/soc/oplus/boot/cmdline_parser/oplus_charger_present.ko",
+        "drivers/soc/oplus/boot/oplus_projectinfo/oplus_bsp_boot_projectinfo.ko",
+        "drivers/soc/oplus/boot/bootmode/boot_mode.ko",
+        "drivers/soc/oplus/boot/bootloader_log/bootloader_log.ko",
+        "drivers/soc/oplus/boot/htb/tango32.ko",
+        "drivers/soc/oplus/device_info/device_info.ko",
+        "drivers/soc/oplus/dft/common/olc/olc.ko",
+        "drivers/soc/oplus/dft/common/feedback/kernel_fb.ko",
+        "drivers/base/kernelFwUpdate/oplus_bsp_fw_update.ko",
+        "drivers/base/touchpanel_notify/oplus_bsp_tp_notify.ko",
+        "kernel/oplus_cpu/cpufreq_health/oplus_bsp_cpufreq_health.ko",
+        "drivers/soc/oplus/boot/qcom_watchdog/qcom_enhance_watchdog.ko",
+        "kernel/oplus_cpu/sched/sched_assist/oplus_bsp_sched_assist.ko",
+        "kernel/oplus_cpu/sched/eas_opt/oplus_bsp_eas_opt.ko",
+        "kernel/oplus_cpu/sched/frame_boost/oplus_bsp_frame_boost.ko",
+        "kernel/oplus_cpu/sched/task_cpustats/oplus_bsp_task_cpustats.ko",
+        "kernel/oplus_cpu/sched/task_sched/oplus_bsp_task_sched.ko",
+        "kernel/oplus_cpu/sched/sched_info/oplus_bsp_schedinfo.ko",
+        "kernel/oplus_cpu/uad/cpufreq_uag.ko",
+        "kernel/oplus_cpu/uad/ua_cpu_ioctl.ko",
+        "kernel/oplus_cpu/waker_identify/oplus_bsp_waker_identify.ko",
+        "kernel/oplus_cpu/oplus_omrg/oplus_bsp_omrg.ko",
+        "kernel/oplus_cpu/cpufreq_bouncing/cpufreq_bouncing.ko",
+        "kernel/oplus_cpu/oplus_overload/oplus_bsp_task_overload.ko",
+        "drivers/soc/oplus/mdmrst/oplus_mdmrst.ko",
+        "mm/mm_osvelte/oplus_bsp_mm_osvelte.ko",
+        "drivers/soc/oplus/storage/common/storage_log/oplus_storage_log.ko",
+        "drivers/soc/oplus/storage/common/oplus_uprobe/oplus_uprobe.ko",
+        "drivers/soc/oplus/power/subsys_sleep_monitor/oplus_subsys_sleep_monitor.ko",
+        "drivers/misc/oplus_procs_load/oplus_procs_load.ko",
+        "drivers/misc/oplus_power_notifier/oplus_power_notifier.ko",
+        "drivers/nfc/thn31/tms_device_modules.ko",
+        "drivers/nfc/oplus_nfc/oplus_nfc.ko"
     ]
+
+    # Updated for kernel modules that are dynamically loaded based on environment variables
+    # 为根据环境变量而动态加载的内核模块而更新
+    _bsp_drv_inject_in_tree_modules = [
+        # keep sorted
+        "drivers/power/oplus/debug-kit/debug-kit.ko",
+    ]
+
+    features = _get_oplus_features()
+    key = 'OPLUS_FEATURE_BSP_DRV_INJECT_TEST'
+    if features.get(key, '0').upper() in ['1', 'TRUE']:
+        _pineapple_in_tree_modules += _bsp_drv_inject_in_tree_modules
 
     _pineapple_consolidate_in_tree_modules = _pineapple_in_tree_modules + [
         # keep sorted
@@ -322,7 +390,6 @@ def define_pineapple():
             mod_list = _pineapple_in_tree_modules
             board_kernel_cmdline_extras += ["nosoftlockup"]
             kernel_vendor_cmdline_extras += ["nosoftlockup"]
-            board_bootconfig_extras += ["androidboot.console=0"]
 
         define_msm_la(
             msm_target = target_name,
@@ -333,5 +400,5 @@ def define_pineapple():
                 board_kernel_cmdline_extras = board_kernel_cmdline_extras,
                 board_bootconfig_extras = board_bootconfig_extras,
             ),
-            dpm_overlay = True,
+            # dpm_overlay = True,
         )

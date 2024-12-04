@@ -49,6 +49,26 @@ static DEFINE_PER_CPU(struct llist_head, blk_cpu_done);
 static void blk_mq_poll_stats_start(struct request_queue *q);
 static void blk_mq_poll_stats_fn(struct blk_stat_callback *cb);
 
+#ifdef CONFIG_BLOCKIO_UX_OPT
+DEFINE_PER_CPU(__u32, block_ux_softirqs);
+unsigned long blk_send_ipi_counter = 0;
+extern bool should_queue_work_ux(struct bio *bio);
+void set_block_ux_softirqs(void)
+{
+	__this_cpu_or(block_ux_softirqs, 1);
+}
+
+__u32 get_block_ux_softirqs(void)
+{
+	return __this_cpu_read(block_ux_softirqs);
+}
+
+void clear_block_ux_softirqs(void)
+{
+	__this_cpu_write(block_ux_softirqs, 0);
+}
+#endif
+
 static int blk_mq_poll_stats_bkt(const struct request *rq)
 {
 	int ddir, sectors, bucket;
@@ -1126,6 +1146,18 @@ static int blk_softirq_cpu_dead(unsigned int cpu)
 
 static void __blk_mq_complete_request_remote(void *data)
 {
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		struct request *rq = (struct request *)data;
+		struct bio *bio;
+
+		for (bio = rq->bio; bio; bio = bio->bi_next) {
+			if (should_queue_work_ux(bio)) {
+				set_block_ux_softirqs();
+				break;
+			}
+		}
+#endif
+
 	__raise_softirq_irqoff(BLOCK_SOFTIRQ);
 }
 
@@ -1174,8 +1206,19 @@ static void blk_mq_raise_softirq(struct request *rq)
 
 	preempt_disable();
 	list = this_cpu_ptr(&blk_cpu_done);
-	if (llist_add(&rq->ipi_list, list))
+	if (llist_add(&rq->ipi_list, list)) {
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		struct bio *bio;
+
+		for (bio = rq->bio; bio; bio = bio->bi_next) {
+			if (should_queue_work_ux(bio)) {
+				set_block_ux_softirqs();
+				break;
+			}
+		}
+#endif
 		raise_softirq(BLOCK_SOFTIRQ);
+	}
 	preempt_enable();
 }
 
@@ -1194,6 +1237,9 @@ bool blk_mq_complete_request_remote(struct request *rq)
 		return false;
 
 	if (blk_mq_complete_need_ipi(rq)) {
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		blk_send_ipi_counter++;
+#endif
 		blk_mq_complete_send_ipi(rq);
 		return true;
 	}

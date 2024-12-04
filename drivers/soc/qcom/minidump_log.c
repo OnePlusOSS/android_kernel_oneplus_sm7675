@@ -29,6 +29,7 @@
 #include <linux/vmalloc.h>
 #include <linux/panic_notifier.h>
 #include "debug_symbol.h"
+#include <linux/version.h>
 #ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 #include <linux/math64.h>
 #include <linux/of.h>
@@ -97,6 +98,10 @@ static struct md_suspend_context_data md_suspend_context;
 #endif
 
 static bool is_vmap_stack __read_mostly;
+
+/* #ifdef OPLUS_FEATURE_DFR */
+static bool md_stack_inited = false;
+/* #endif */
 
 #ifdef CONFIG_QCOM_MINIDUMP_FTRACE
 #include <trace/hooks/ftrace_dump.h>
@@ -344,9 +349,21 @@ static void register_vmapped_stack(struct md_region *mdr, int *mdno,
 	sp &= ~(PAGE_SIZE - 1);
 	for (i = 0; i < STACK_NUM_PAGES; i++) {
 		if (unlikely(!update)) {
+/* #ifdef OPLUS_FEATURE_DFR */
+			if (md_stack_inited) {
+				*mdno = msm_minidump_add_region(mdr);
+				if (*mdno < 0)
+					pr_err("Failed to add stack of entry %s in Minidump\n", mdr->name);
+			} else {
+				scnprintf(mdr->name, sizeof(mdr->name), "%s_%d",
+						  name_str, i);
+				*mdno = register_stack_entry(mdr, sp, PAGE_SIZE);
+			}
+/* #else
 			scnprintf(mdr->name, sizeof(mdr->name), "%s_%d",
 					  name_str, i);
 			*mdno = register_stack_entry(mdr, sp, PAGE_SIZE);
+#endif */
 		} else {
 			update_stack_entry(mdr, sp, *mdno);
 		}
@@ -361,8 +378,19 @@ static void register_normal_stack(struct md_region *mdr, int *mdno,
 {
 	sp &= ~(THREAD_SIZE - 1);
 	if (unlikely(!update)) {
+/* #ifdef OPLUS_FEATURE_DFR */
+		if (md_stack_inited) {
+			*mdno = msm_minidump_add_region(mdr);
+			if (*mdno < 0)
+				pr_err("Failed to add stack of entry %s in Minidump\n", mdr->name);
+		} else {
+			scnprintf(mdr->name, sizeof(mdr->name), name_str);
+			*mdno = register_stack_entry(mdr, sp, THREAD_SIZE);
+		}
+/* #else
 		scnprintf(mdr->name, sizeof(mdr->name), name_str);
 		*mdno = register_stack_entry(mdr, sp, THREAD_SIZE);
+#endif */
 	} else {
 		update_stack_entry(mdr, sp, *mdno);
 	}
@@ -478,6 +506,7 @@ static void register_current_stack(void)
 	 * instead the page table must be walked to acquire the physical
 	 * address of all pages of the stack.
 	 */
+
 	if (likely(is_vmap_stack)) {
 		stack_vm_area = task_stack_vm_area(current);
 		sp = (u64)stack_vm_area->addr;
@@ -1301,8 +1330,9 @@ static int md_module_process(struct module *mod)
 
 	if (md_mod_info_seq_buf) {
 		base_addr = (unsigned long)mod->core_layout.base;
-		seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %lx",
-				mod->name, base_addr);
+        seq_buf_printf(md_mod_info_seq_buf, "name: %s, base: %lx, nplt: %d",
+			mod->name, base_addr, mod->arch.core.plt_max_entries +
+			1 + NR_FTRACE_PLTS);
 		if (is_key_module) {
 			dump_start = base_addr +
 					mod->core_layout.ro_after_init_size;
@@ -1519,15 +1549,162 @@ static void register_pstore_info(void)
 }
 #endif
 
+/* #ifdef OPLUS_FEATURE_DFR */
+static bool current_stack_enable = false;
+
+int clear_md_region(int regno,struct md_region *ksp_entry)
+{
+        unsigned long tmpbuf;
+        int ret;
+
+        tmpbuf = get_zeroed_page(GFP_KERNEL);
+        if (NULL == (void *)tmpbuf) {
+                pr_err("md get_zeroed_page fail");
+                return -ENOMEM;
+        }
+        ksp_entry->virt_addr = tmpbuf;
+        ksp_entry->phys_addr = virt_to_phys((void *)tmpbuf);
+        ret = msm_minidump_update_region(regno,ksp_entry);
+        free_page(tmpbuf);
+        return ret;
+}
+
+void clear_current_stack(void)
+{
+	struct md_stack_cpu_data *md_stack_cpu_d;
+	int ret = 0;
+	unsigned int cpu;
+
+	unregister_trace_sched_switch(md_current_stack_notifer, NULL);
+	for_each_possible_cpu(cpu) {
+		md_stack_cpu_d = &per_cpu(md_stack_data, cpu);	
+		ret = clear_md_region(*(md_stack_cpu_d->stack_mdidx),md_stack_cpu_d->stack_mdr);
+		if (ret < 0)
+			pr_err("failed to clear current stack");
+	}
+}
+void clear_suspend_context(void)
+{
+	int ret = 0;
+	ret = clear_md_region(*(md_suspend_context.stack_mdidx),md_suspend_context.stack_mdr);
+	if (ret < 0)
+		pr_err("failed to clear suspend  stack");
+	ret = clear_md_region(md_suspend_context.task_mdno,&md_suspend_context.task_mdr);
+	if (ret < 0)
+		pr_err("failed to clear suspend task");
+}
+static void unregister_current_stack(void)
+{
+	unregister_trace_sched_switch(md_current_stack_notifer, NULL);
+	if (md_stack_inited)
+	{
+		pr_err("start clean current_stack");
+		clear_current_stack();
+	}
+
+}
+static void unregister_suspend_context(void)
+{
+	unregister_pm_notifier(&minidump_pm_nb);
+	if (md_stack_inited)
+	{
+		pr_err("start clean suspend_context");
+		clear_suspend_context();
+	}
+}
+static ssize_t current_stack_trigger(struct file *filp, const char *ubuf, size_t cnt, loff_t *data)
+{
+	char buf[64];
+	int val = 0;
+	int ret = 0;
+
+	if (cnt >= sizeof(buf)) {
+		return -EINVAL;
+	}
+	if (copy_from_user(&buf, ubuf, cnt)) {
+		return -EFAULT;
+	}
+	buf[cnt] = 0;
+	ret = kstrtoint(buf, 0, (int *)&val);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if ((!!val) && (current_stack_enable == false)) {
+		pr_info("current_stack enable");
+		if (md_stack_inited == false) 
+		{
+			register_current_stack();
+			register_suspend_context();
+			md_stack_inited = true;
+		}
+		else {
+			register_pm_notifier(&minidump_pm_nb);
+			register_trace_sched_switch(md_current_stack_notifer, NULL);
+		}
+		 current_stack_enable = true;
+	}
+	else if ((!val) && (current_stack_enable == true)) {
+		pr_info("current_stack disable");
+		unregister_current_stack();
+		unregister_suspend_context();
+		current_stack_enable = false;
+	}
+	return cnt;
+}
+static ssize_t current_stack_show(struct file *file, char __user *buf,
+        size_t count,loff_t *off)
+{
+	char page[64] = {0};
+	int len = 0;
+
+	len = sprintf(&page[len], "=== current_stack_enable:%d ===\n", current_stack_enable);
+	if(len > *off)
+		len -= *off;
+	else
+		len = 0;
+	if(copy_to_user(buf,page,(len < count ? len : count))) {
+		return -EFAULT;
+	}
+	*off += len < count ? len : count;
+	return (len < count ? len : count);
+}
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
+    static const struct proc_ops current_stack_fops = {
+    .proc_read = current_stack_show,
+    .proc_write = current_stack_trigger,
+    .proc_lseek = seq_lseek,
+     };
+#else
+    struct file_operations current_stack_fops = {
+    .write       = current_stack_trigger,
+    .read        = current_stack_show,
+     };
+#endif
+/* #endif */
+
 int msm_minidump_log_init(void)
 {
+
+	/* #ifdef OPLUS_FEATURE_DFR */
+	struct proc_dir_entry *pe;
+	pr_info("msm_minidump_log_init\n");
+	pe = proc_create("minidump_vcpu_stack", 0666, NULL, &current_stack_fops);
+	if (!pe) {
+		pr_err("Failed to register minidump_vcpu_stack interface\n");
+	return -ENOMEM;
+	}
+	/* #endif */
+
 	register_kernel_sections();
 	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
 	register_irq_stack();
+/*#ifdef OPLUS_FEATURE_DFR
 #ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
 	register_current_stack();
 	register_suspend_context();
 #endif
+#endif */
 #ifdef CONFIG_QCOM_MINIDUMP_PSTORE
 	register_pstore_info();
 #endif
