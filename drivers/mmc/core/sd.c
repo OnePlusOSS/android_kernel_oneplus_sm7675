@@ -1822,8 +1822,15 @@ int mmc_attach_sd(struct mmc_host *host)
 	WARN_ON(!host->claimed);
 
 	err = mmc_send_app_op_cond(host, 0, &ocr);
-	if (err)
-		return err;
+	if (err) {
+		pr_err("first mmc_send_app_op_cond fail, retry after 500ms delay\n");
+		mmc_delay(500);
+		err = mmc_send_app_op_cond(host, 0, &ocr);
+		if (err) {
+			pr_err("second mmc_send_app_op_cond get voltage value error\n");
+			return err;
+		}
+	}
 
 	mmc_attach_bus(host, &mmc_sd_ops);
 	if (host->ocr_avail_sd)

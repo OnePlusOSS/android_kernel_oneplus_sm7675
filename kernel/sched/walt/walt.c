@@ -1678,29 +1678,9 @@ static bool do_pl_notif(struct rq *rq)
 
 #define CMD_ADD		(1)
 #define CMD_SET		(2)
-#ifdef CONFIG_HMBIRD_SCHED
-static void curr_sum_fixed_set(struct walt_rq *wrq, int cmd, u64 val) {
-	if (CMD_ADD == cmd) {
-		wrq->curr_runnable_sum_fixed += val;
-	} else if (CMD_SET == cmd) {
-		wrq->curr_runnable_sum_fixed = val;
-	} else {}
-}
-
-static u64 curr_sum_fixed(struct walt_rq *wrq) {return wrq->curr_runnable_sum_fixed;}
-
-static void prev_sum_fixed_set(struct walt_rq *wrq, int cmd, u64 val) {
-	if (CMD_ADD == cmd) {
-		wrq->prev_runnable_sum_fixed += val;
-	} else if (CMD_SET == cmd) {
-		wrq->prev_runnable_sum_fixed = val;
-	} else {}
-}
-#else
 static void curr_sum_fixed_set(struct walt_rq *wrq, int cmd, u64 val) {}
 static void prev_sum_fixed_set(struct walt_rq *wrq, int cmd, u64 val) {}
 static u64 curr_sum_fixed(struct walt_rq *wrq) {return 0;}
-#endif
 
 static void rollover_cpu_window(struct rq *rq, bool full_window)
 {
@@ -5339,11 +5319,6 @@ static void android_rvh_try_to_wake_up(void *unused, struct task_struct *p)
 
 	if (unlikely(walt_disabled))
 		return;
-
-#ifdef CONFIG_HMBIRD_SCHED
-	if (walt_ops && walt_ops->scx_enable && walt_ops->scx_enable())
-		return;
-#endif
 
 	rq_lock_irqsave(rq, &rf);
 	/* bug: 7632324, see commit 579ac04dfe82b2b013d1d6444a3baaee9e263c5e

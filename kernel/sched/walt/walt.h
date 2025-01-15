@@ -143,10 +143,6 @@ struct walt_rq {
 	u64			old_estimated_time;
 	u64			curr_runnable_sum;
 	u64			prev_runnable_sum;
-#ifdef CONFIG_HMBIRD_SCHED
-	u64			curr_runnable_sum_fixed;
-	u64			prev_runnable_sum_fixed;
-#endif
 	u64			nt_curr_runnable_sum;
 	u64			nt_prev_runnable_sum;
 	struct group_cpu_time	grp_time;
