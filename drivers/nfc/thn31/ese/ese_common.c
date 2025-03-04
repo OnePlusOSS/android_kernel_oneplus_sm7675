@@ -32,98 +32,41 @@ struct ese_info *ese_get_data(struct inode *inode)
     return ese;
 }
 
-void ese_gpio_release(struct ese_info *ese)
+void ese_hard_reset(struct ese_info *ese)
 {
-    if (ese->independent_support) {
-        gpio_free(ese->hw_res.irq_gpio);
-        gpio_free(ese->hw_res.rst_gpio);
-    }
-}
-
-void ese_enable_irq(struct ese_info *ese)
-{
-    unsigned long flag;
-
-    if (!ese->independent_support) {
+    if (!ese->tms->feature.indept_se_support) {
         return;
     }
 
-    spin_lock_irqsave(&ese->irq_enable_slock, flag);
-
-    if (!ese->irq_enable) {
-        enable_irq(ese->client->irq);
-        ese->irq_enable = true;
-    }
-
-    spin_unlock_irqrestore(&ese->irq_enable_slock, flag);
-}
-
-void ese_disable_irq(struct ese_info *ese)
-{
-    unsigned long flag;
-
-    if (!ese->independent_support) {
+    if (!ese->hw_res.rst_gpio) {
+        TMS_ERR("ese rst_gpio is NULL\n");
         return;
     }
 
-    spin_lock_irqsave(&ese->irq_enable_slock, flag);
-
-    if (ese->irq_enable) {
-        disable_irq_nosync(ese->client->irq);
-        ese->irq_enable = false;
-    }
-
-    spin_unlock_irqrestore(&ese->irq_enable_slock, flag);
+    ese->tms->set_gpio(ese->hw_res.rst_gpio, ON, WAIT_TIME_NONE, WAIT_TIME_500US);
+    ese->tms->set_gpio(ese->hw_res.rst_gpio, OFF, WAIT_TIME_NONE, WAIT_TIME_500US);
+    /* WAIT_TIME_5000US is BL wait time */
+    ese->tms->set_gpio(ese->hw_res.rst_gpio, ON, WAIT_TIME_NONE, WAIT_TIME_5000US);
 }
 
-static irqreturn_t ese_irq_handler(int irq, void *dev_id)
-{
-    struct ese_info *ese;
-    ese = dev_id;
-    ese_disable_irq(ese);
-    wake_up(&ese->read_wq);
-    return IRQ_HANDLED;
-}
-
-int ese_irq_register(struct ese_info *ese)
-{
-    int ret;
-
-    if (!ese->independent_support) {
-        TMS_WARN("Not independent ese chip, Normal end-\n");
-        return SUCCESS;
-    }
-
-    ese->client->irq = gpio_to_irq(ese->hw_res.irq_gpio);
-
-    if (ese->client->irq < 0) {
-        TMS_ERR("Get soft irq number failed");
-        return -ERROR;
-    }
-
-    ret = devm_request_irq(ese->spi_dev, ese->client->irq, ese_irq_handler,
-                           (IRQF_TRIGGER_RISING | IRQF_ONESHOT), ese->dev.name, ese);
-
-    if (ret) {
-        TMS_ERR("Register irq failed, ret = %d\n", ret);
-        return -ERROR;
-    }
-
-    TMS_INFO("Register eSE IRQ[%d]\n", ese->client->irq);
-    return ret;
-}
-
-void ese_power_control(struct ese_info *ese, bool state)
+void ese_reset_control(struct ese_info *ese, bool state)
 {
     if (!ese->tms->set_gpio) {
-        TMS_ERR("ese->tms->set_gpio is NULL");
+        TMS_ERR("set_gpio is NULL\n");
         return;
     }
 
     if (state == ON) {
-        ese->tms->set_gpio(ese->tms->hw_res.ven_gpio, ON, WAIT_TIME_NONE, WAIT_TIME_NONE);
+        ese->tms->set_gpio(ese->hw_res.rst_gpio, ON, WAIT_TIME_NONE, WAIT_TIME_NONE);
     } else if (state == OFF) {
-        ese->tms->set_gpio(ese->tms->hw_res.ven_gpio, OFF, WAIT_TIME_NONE, WAIT_TIME_NONE);
+        ese->tms->set_gpio(ese->hw_res.rst_gpio, OFF, WAIT_TIME_NONE, WAIT_TIME_NONE);
+    }
+}
+
+void ese_gpio_release(struct ese_info *ese)
+{
+    if (ese->tms->feature.indept_se_support) {
+        gpio_free(ese->hw_res.rst_gpio);
     }
 }
 
@@ -131,19 +74,8 @@ static int ese_gpio_configure_init(struct ese_info *ese)
 {
     int ret;
 
-    TMS_DEBUG("ese->independent_support = %d\n", ese->independent_support);
-
-    if (!ese->independent_support) {
+    if (!ese->tms->feature.indept_se_support) {
         return SUCCESS;
-    }
-
-    if (gpio_is_valid(ese->hw_res.irq_gpio)) {
-        ret = gpio_direction_input(ese->hw_res.irq_gpio);
-
-        if (ret < 0) {
-            TMS_ERR("Unable to to set irq_gpio as input\n");
-            return ret;
-        }
     }
 
     if (gpio_is_valid(ese->hw_res.rst_gpio)) {
@@ -164,7 +96,8 @@ static int ese_parse_dts_init(struct ese_info *ese)
     struct device_node *np;
 
     np = ese->spi_dev->of_node;
-    ese->independent_support = of_property_read_bool(np, "independent_support");
+    ese->tms->feature.indept_se_support = of_property_read_bool(np, "indept_se_support");
+    TMS_DEBUG("indept_se_support = %d\n", ese->tms->feature.indept_se_support);
     rcv = of_property_read_string(np, "tms,device-name", &ese->dev.name);
 
     if (rcv < 0) {
@@ -179,23 +112,14 @@ static int ese_parse_dts_init(struct ese_info *ese)
         TMS_WARN("device-count not specified, set default\n");
     }
 
-    if (ese->independent_support) {
-        ese->hw_res.irq_gpio = of_get_named_gpio(np, "tms,irq-gpio", 0);
-
-        if (gpio_is_valid(ese->hw_res.irq_gpio)) {
-            rcv = gpio_request(ese->hw_res.irq_gpio, "ese_int");
-
-            if (rcv) {
-                TMS_WARN("Unable to request gpio[%d] as IRQ\n", ese->hw_res.irq_gpio);
-            }
-        } else {
-            TMS_ERR("Irq gpio not specified\n");
-            return -EINVAL;
-        }
-
+    if (ese->tms->feature.indept_se_support) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
         ese->hw_res.rst_gpio = of_get_named_gpio_flags(np, "tms,reset-gpio", 0,
-                               &ese->hw_res.rst_flag);
-
+                                                       &ese->hw_res.rst_flag);
+#else
+        ese->hw_res.rst_gpio = of_get_named_gpio(np, "tms,reset-gpio", 0);
+        ese->hw_res.rst_flag = 1;
+#endif
         if (gpio_is_valid(ese->hw_res.rst_gpio)) {
             rcv = gpio_request(ese->hw_res.rst_gpio, "ese_rst");
 
@@ -206,22 +130,16 @@ static int ese_parse_dts_init(struct ese_info *ese)
         } else {
             TMS_ERR("Reset gpio not specified\n");
             ret =  -EINVAL;
-            goto err_free_irq;
+            goto err;
         }
 
-        TMS_INFO("irq_gpio = %d, rst_gpio = %d\n", ese->hw_res.irq_gpio,
-                  ese->hw_res.rst_gpio);
+        TMS_INFO("rst_gpio = %d\n", ese->hw_res.rst_gpio);
     }
 
     TMS_DEBUG("ese device name is %s, count = %d\n", ese->dev.name,
               ese->dev.count);
     return SUCCESS;
-err_free_irq:
-
-    if (ese->independent_support) {
-        gpio_free(ese->hw_res.irq_gpio);
-    }
-
+err:
     TMS_ERR("Failed, ret = %d\n", ret);
     return ret;
 }

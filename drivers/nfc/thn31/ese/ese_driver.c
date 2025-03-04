@@ -8,76 +8,23 @@
 /*********** PART0: Global Variables Area ***********/
 
 /*********** PART1: Callback Function Area ***********/
-int spi_block_read(struct ese_info *ese, uint8_t *buf, size_t count,
-                   int timeout)
-{
-    int ret;
-
-    if (timeout > ESE_CMD_RSP_TIMEOUT_MS) {
-        timeout = ESE_CMD_RSP_TIMEOUT_MS;
-    }
-
-    if (!gpio_get_value(ese->hw_res.irq_gpio)) {
-        while (1) {
-            ret = 0;
-            ese_enable_irq(ese);
-
-            if (!gpio_get_value(ese->hw_res.irq_gpio)) {
-                if (timeout) {
-                    ret = wait_event_interruptible_timeout(ese->read_wq, !ese->irq_enable,
-                                                           msecs_to_jiffies(timeout));
-
-                    if (ret <= 0) {
-                        TMS_ERR("Wakeup of read work queue timeout\n");
-                        return -ETIMEDOUT;
-                    }
-                } else {
-                    ret = wait_event_interruptible(ese->read_wq, !ese->irq_enable);
-
-                    if (ret) {
-                        TMS_ERR("Wakeup of read work queue failed\n");
-                        return ret;
-                    }
-                }
-            }
-
-            ese_disable_irq(ese);
-
-            if (gpio_get_value(ese->hw_res.irq_gpio)) {
-                break;
-            }
-
-            if (!gpio_get_value(ese->hw_res.irq_gpio)) {
-                TMS_ERR("Can not detect interrupt\n");
-                return -EIO;
-            }
-
-            if (ese->release_read) {
-                TMS_ERR("Releasing read\n");
-                return -EWOULDBLOCK;
-            }
-
-            TMS_WARN("Spurious interrupt detected\n");
-        }
-    }
-
-    /* Read data */
-    ret = spi_read(ese->client, buf, count);
-    return ret;
-}
-
-static int ese_ioctl_set_state(struct ese_info *ese, unsigned long arg)
+static int ese_set_power(struct ese_info *ese, unsigned long arg)
 {
     int ret = SUCCESS;
     TMS_DEBUG("arg = %lu\n", arg);
 
+    if (!ese->tms->set_gpio) {
+        TMS_ERR("set_gpio is NULL");
+        return ret;
+    }
+
     switch (arg) {
     case ESE_POWER_ON:
-        ese_power_control(ese, ON);
+        ese->tms->set_gpio(ese->tms->hw_res.ven_gpio, ON, WAIT_TIME_NONE, WAIT_TIME_NONE);
         break;
 
     case ESE_POWER_OFF:
-        ese_power_control(ese, OFF);
+        ese->tms->set_gpio(ese->tms->hw_res.ven_gpio, OFF, WAIT_TIME_NONE, WAIT_TIME_NONE);
         break;
 
     default:
@@ -131,8 +78,13 @@ static long ese_device_ioctl(struct file *file, unsigned int cmd,
     }
 
     switch (cmd) {
-    case ESE_SET_STATE:
-        ret = ese_ioctl_set_state(ese, arg);
+    case ESE_SET_POWER:
+        ret = ese_set_power(ese, arg);
+        break;
+
+    case ESE_HARD_RESET:
+        ese_hard_reset(ese);
+        ret = SUCCESS;
         break;
 
     case ESE_SPI_CLK_CONTROL:
@@ -237,13 +189,7 @@ static ssize_t ese_device_read(struct file *file, char *buf, size_t count,
     memset(read_buf, 0x00, count);
     mutex_lock(&ese->read_mutex);
 
-    if (file->f_flags & O_NONBLOCK) {
-        /* Noblock read data mode */
-        ret = spi_read(ese->client, read_buf, count);
-    } else {
-        /* Block read data mode */
-        ret = spi_block_read(ese, read_buf, count, 0);
-    }
+    ret = spi_read(ese->client, read_buf, count);
 
     if (ret == 0) {
         ret = count;
@@ -264,33 +210,6 @@ err_release_read:
     mutex_unlock(&ese->read_mutex);
     devm_kfree(ese->spi_dev, read_buf);
     return ret;
-}
-
-int ese_device_flush(struct file *file, fl_owner_t id)
-{
-    struct ese_info *ese;
-    ese = file->private_data;
-
-    if (!ese) {
-        TMS_ERR("eSE device no longer exists\n");
-        return -ENODEV;
-    }
-
-    if (!ese->independent_support) {
-        return SUCCESS;
-    }
-
-    if (!mutex_trylock(&ese->read_mutex)) {
-        ese->release_read = true;
-        ese_disable_irq(ese);
-        wake_up(&ese->read_wq);
-        TMS_INFO("Waiting for release of blocked read\n");
-        mutex_lock(&ese->read_mutex);
-        ese->release_read = false;
-    }
-
-    mutex_unlock(&ese->read_mutex);
-    return SUCCESS;
 }
 
 static int ese_device_close(struct inode *inode, struct file *file)
@@ -333,7 +252,6 @@ static const struct file_operations ese_fops = {
     .release        = ese_device_close,
     .read           = ese_device_read,
     .write          = ese_device_write,
-    .flush          = ese_device_flush,
     .unlocked_ioctl = ese_device_ioctl,
 };
 
@@ -359,8 +277,6 @@ static int ese_device_probe(struct spi_device *client)
     ese->spi_dev               = &client->dev;
     ese->client->mode          = SPI_MODE_0;
     ese->client->bits_per_word = 8;
-    ese->irq_enable            = true;
-    ese->release_read          = false;
     ese->dev.fops              = &ese_fops;
     /* step3 : register common ese */
     ret = ese_common_info_init(ese);
@@ -383,10 +299,6 @@ static int ese_device_probe(struct spi_device *client)
     mutex_init(&ese->read_mutex);
     mutex_init(&ese->write_mutex);
 
-    if (ese->independent_support) {
-        spin_lock_init(&ese->irq_enable_slock);
-    }
-
     /* step6 : register ese device */
     if (!ese->tms->registe_device) {
         TMS_ERR("ese->tms->registe_device is NULL\n");
@@ -400,21 +312,9 @@ static int ese_device_probe(struct spi_device *client)
         goto err_destroy_mutex;
     }
 
-    /* step7 : register ese irq */
-    ret = ese_irq_register(ese);
-
-    if (ret) {
-        TMS_ERR("register irq failed\n");
-        goto err_unregiste_device;
-    }
-
     spi_set_drvdata(client, ese);
     TMS_INFO("Successfully\n");
     return SUCCESS;
-err_unregiste_device:
-    if (ese->tms->unregiste_device) {
-        ese->tms->unregiste_device(&ese->dev);
-    }
 err_destroy_mutex:
     mutex_destroy(&ese->read_mutex);
     mutex_destroy(&ese->write_mutex);
@@ -445,7 +345,6 @@ static void ese_device_remove(struct spi_device *client)
 #endif
     }
 
-    free_irq(ese->client->irq, ese);
     mutex_destroy(&ese->read_mutex);
     mutex_destroy(&ese->write_mutex);
     ese_gpio_release(ese);

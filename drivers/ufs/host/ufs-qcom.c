@@ -43,6 +43,10 @@
 #include <ufs/ufshcd.h>
 #include "ufshcd-pltfrm.h"
 #include <ufs/unipro.h>
+#if defined(CONFIG_UFSFEATURE)
+#include "vendor/ufsfeature.h"
+#include "vendor/ufstw.h"
+#endif
 #include "ufs-qcom.h"
 #define CREATE_TRACE_POINTS
 #include "ufs-qcom-trace.h"
@@ -180,6 +184,9 @@ struct ufs_qcom_dev_params {
 	u32 desired_working_mode;
 };
 
+#if defined(CONFIG_UFSFEATURE)
+static void ufs_samsung_register_hooks(void);
+#endif
 static struct ufs_qcom_host *ufs_qcom_hosts[MAX_UFS_QCOM_HOSTS];
 
 static void ufs_qcom_get_default_testbus_cfg(struct ufs_qcom_host *host);
@@ -1279,6 +1286,48 @@ static int ufs_qcom_set_dme_vs_core_clk_ctrl_max_freq_mode(struct ufs_hba *hba)
 	return err;
 }
 
+#if defined(CONFIG_UFSFEATURE)
+static void ufs_vh_prep_fn(void *data, struct ufs_hba *hba,
+			struct request *rq, struct ufshcd_lrb *lrbp, int *err)
+{
+	ufsf_change_lun(ufs_qcom_get_ufsf(hba), lrbp);
+	*err = ufsf_prep_fn(ufs_qcom_get_ufsf(hba), lrbp);
+}
+
+static void ufs_vh_compl_command(void *data, struct ufs_hba *hba,
+			struct ufshcd_lrb *lrbp)
+{
+	struct utp_upiu_header *header = &lrbp->ucd_rsp_ptr->header;
+	struct scsi_cmnd *cmd = lrbp->cmd;
+	int scsi_status, result, ocs;
+
+	if (!cmd)
+		return;
+
+	ocs = le32_to_cpu(lrbp->utr_descriptor_ptr->header.dword_2) & MASK_OCS;
+	if (ocs != OCS_SUCCESS)
+		return;
+
+	result = be32_to_cpu(header->dword_0) >> 24;
+	if (result != UPIU_TRANSACTION_RESPONSE)
+		return;
+
+	scsi_status = be32_to_cpu(header->dword_1) & MASK_SCSI_STATUS;
+	if (scsi_status != SAM_STAT_GOOD)
+		return;
+
+	ufsf_upiu_check_for_ccd(lrbp);
+}
+
+static void ufs_vh_update_sdev(void *data, struct scsi_device *sdev)
+{
+	struct ufs_hba *hba = shost_priv(sdev->host);
+	struct ufsf_feature *ufsf = ufs_qcom_get_ufsf(hba);
+
+	ufsf_slave_configure(ufsf, sdev);
+}
+#endif
+
 /**
  * ufs_qcom_bypass_cfgready_signal - Tunes PA_VS_CONFIG_REG1 and
  * PA_VS_CONFIG_REG2 vendor specific attributes of local unipro
@@ -1814,8 +1863,14 @@ static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	int err = 0;
 
-	if (status == PRE_CHANGE)
+	if (status == PRE_CHANGE) {
+#if defined(CONFIG_UFSFEATURE)
+		if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+			ufsf_suspend(ufs_qcom_get_ufsf(hba), pm_op == UFS_SYSTEM_PM);
+		}
+#endif
 		return 0;
+	}
 
 	/*
 	 * If UniPro link is not active or OFF, PHY ref_clk, main PHY analog
@@ -1853,7 +1908,13 @@ static int ufs_qcom_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	// unsigned long flags;
 	int err;
+#if defined(CONFIG_UFSFEATURE)
+	struct ufsf_feature *ufsf = ufs_qcom_get_ufsf(hba);
 
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+		schedule_work(&ufsf->resume_work);
+	}
+#endif
 	if (host->vddp_ref_clk && (hba->rpm_lvl > UFS_PM_LVL_3 ||
 				   hba->spm_lvl > UFS_PM_LVL_3))
 		ufs_qcom_enable_vreg(hba->dev,
@@ -1892,6 +1953,11 @@ static int ufs_qcom_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 	if (host->dbg_en)
 		trace_ufs_qcom_resume(dev_name(hba->dev), pm_op, hba->rpm_lvl, hba->spm_lvl,
 				hba->uic_link_state, hba->curr_dev_pwr_mode, err);
+
+	if (host->irq_toggle_affinity_by_ioloading) {
+		queue_delayed_work(host->ufs_qos->workq, &host->fwork,
+			msecs_to_jiffies(UFS_QCOM_LOAD_MON_DLY_MS));
+	}
 	return 0;
 }
 
@@ -2601,6 +2667,12 @@ static int ufs_qcom_apply_dev_quirks(struct ufs_hba *hba)
 
 	ufshcd_parse_pm_levels(hba);
 
+	/* the v7 need to keep vcc on for stability */
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+		hba->rpm_lvl = 1;
+		hba->spm_lvl = 1;
+	}
+
 	if (hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON)
 		hba->dev_quirks |= UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM;
 
@@ -2675,9 +2747,10 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 			hba->caps |= UFSHCD_CAP_WB_EN;
 	}
 
-	if (of_property_read_bool(np, "ufshc_cap_clk_scaling")) {
-		hba->caps |= UFSHCD_CAP_CLK_SCALING;
-	}
+	if (!(hba->caps & UFSHCD_CAP_CLK_SCALING) && of_property_read_bool(np, "irq_toggle_affinity_by_ioloading")) {
+		host->irq_toggle_affinity_by_ioloading = true;
+	} else
+		host->irq_toggle_affinity_by_ioloading = false;
 
 	hba->caps |= UFSHCD_CAP_CRYPTO;
 
@@ -3111,6 +3184,16 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		goto out_release_mem;
 	}
 
+#if defined(CONFIG_UFSFEATURE)
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+		if (ufsf_check_query(ioctl_data->opcode)) {
+			err = ufsf_query_ioctl(ufs_qcom_get_ufsf(hba), lun, buffer,
+					ioctl_data, UFSFEATURE_SELECTOR);
+			goto out_release_mem;
+		}
+	}
+#endif
+
 	/* verify legal parameters & send query */
 	switch (ioctl_data->opcode) {
 	case UPIU_QUERY_OPCODE_READ_DESC:
@@ -3396,8 +3479,9 @@ static void ufs_qcom_qos(struct ufs_hba *hba, int tag)
 	if (!qcg)
 		return;
 
-	if (qcg->perf_core && !host->cpufreq_dis &&
+	if ((qcg->perf_core && !host->cpufreq_dis &&
 					!!atomic_read(&host->scale_up))
+					|| host->irq_toggle_affinity_by_ioloading)
 		atomic_inc(&host->num_reqs_threshold);
 
 	if (qcg->voted) {
@@ -5111,8 +5195,9 @@ static int ufs_qcom_clk_scale_notify(struct ufs_hba *hba,
 			return err;
 		if (scale_up) {
 			err = ufs_qcom_clk_scale_up_pre_change(hba);
-			if (!host->cpufreq_dis &&
-			    !(atomic_read(&host->therm_mitigation))) {
+			if ((!host->cpufreq_dis &&
+			    !(atomic_read(&host->therm_mitigation)))
+				&& !host->irq_toggle_affinity_by_ioloading ) {
 				atomic_set(&host->num_reqs_threshold, 0);
 				queue_delayed_work(host->ufs_qos->workq,
 						  &host->fwork,
@@ -5338,6 +5423,14 @@ static void ufs_qcom_event_notify(struct ufs_hba *hba,
 	struct phy *phy = host->generic_phy;
 	bool ber_th_exceeded = false;
 	u32 reg = *(u32 *)data;
+#if defined(CONFIG_UFSFEATURE)
+	unsigned int val = *(u32 *)data;
+
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+		if (evt == UFS_EVT_DEV_RESET && val == 0)
+			ufsf_reset_lu(ufs_qcom_get_ufsf(hba));
+	}
+#endif
 	recordUniproErr(&signalCtrl, reg, evt);
 	recordGearErr(&signalCtrl, hba);
 
@@ -5929,6 +6022,12 @@ static int ufs_qcom_device_reset(struct ufs_hba *hba)
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	int ret = 0;
 
+#if defined(CONFIG_UFSFEATURE)
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+		ufsf_reset_host(ufs_qcom_get_ufsf(hba));
+	}
+#endif
+
 	/* Reset UFS Host Controller and PHY */
 	ret = ufs_qcom_host_reset(hba);
 	if (ret)
@@ -5988,12 +6087,24 @@ static struct ufs_dev_quirk ufs_qcom_dev_fixups[] = {
 	{ .wmanufacturerid = UFS_VENDOR_TOSHIBA,
 	  .model = UFS_ANY_MODEL,
 	  .quirk = UFS_DEVICE_QUIRK_DELAY_AFTER_LPM },
+	{ .wmanufacturerid = UFS_VENDOR_SAMSUNG,
+	  .model = "KLUFG4LHGC-B0E1",
+	  .quirk = UFS_DEVICE_QUIRK_SAMSUNG_QLC },
 	{}
 };
 
 static void ufs_qcom_fixup_dev_quirks(struct ufs_hba *hba)
 {
 	ufshcd_fixup_dev_quirks(hba, ufs_qcom_dev_fixups);
+
+	/* Register hook for samsung feature */
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
+		ufs_samsung_register_hooks();
+		if (hba->caps & UFSHCD_CAP_WB_EN) {
+			hba->caps &= ~UFSHCD_CAP_WB_EN;
+		}
+		ufsf_set_init_state(hba);
+	}
 }
 
 /* Resources */
@@ -6835,6 +6946,18 @@ static int ufs_cpufreq_status(void)
 }
 #endif
 
+#if defined(CONFIG_UFSFEATURE)
+static void ufs_samsung_register_hooks(void)
+{
+	register_trace_android_vh_ufs_prepare_command(
+			ufs_vh_prep_fn, NULL);
+	register_trace_android_vh_ufs_compl_command(
+			ufs_vh_compl_command, NULL);
+	register_trace_android_vh_ufs_update_sdev(
+			ufs_vh_update_sdev, NULL);
+}
+#endif
+
 static bool is_bootdevice_ufs = true;
 
 static bool ufs_qcom_read_boot_config(struct platform_device *pdev)
@@ -6963,6 +7086,12 @@ static int ufs_qcom_remove(struct platform_device *pdev)
 	qcg = r->qcg;
 
 	pm_runtime_get_sync(&(pdev)->dev);
+
+#if defined(CONFIG_UFSFEATURE)
+	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC)
+		ufsf_remove(ufs_qcom_get_ufsf(hba));
+#endif
+
 	for (i = 0; i < r->num_groups; i++, qcg++)
 		remove_group_qos(qcg);
 

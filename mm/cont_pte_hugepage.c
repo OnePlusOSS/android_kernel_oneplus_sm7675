@@ -810,17 +810,6 @@ enum chp_vma_type chp_handle_prctl_set_anon_name(const char __user *uname,
 		return false;
 
 	switch (name[0]) {
-	case 'd':
-		/* dalvik_main only have one in a process */
-		b = is_vma_name_valid(false, VMA_NAME_DALVIK_MAIN_V, name,
-				      SZ_256M, len, mm, uaddr,
-				      &address->dalvik_main) ||
-			is_vma_name_valid(false, VMA_NAME_DALVIK_MAIN, name,
-					  SZ_256M, len, mm, uaddr,
-					  &address->dalvik_main);
-		if (b)
-			ret = CHP_VMA_DALVIK;
-		break;
 	case 'l':
 		/* jemalloc set all vma name with libc_malloc */
 		b = is_vma_name_valid(true, VMA_NAME_JEMALLOC, name,
@@ -830,20 +819,6 @@ enum chp_vma_type chp_handle_prctl_set_anon_name(const char __user *uname,
 			address->libc_malloc_pad = address->libc_malloc;
 			ret = CHP_VMA_NATIVE;
 		}
-		break;
-	case 's':
-		/*
-		 * scudo also support scudo:ringbuffer, scudo:primary_reserve
-		 * which are for debug only
-		 */
-		b = is_vma_name_valid(true, VMA_NAME_SCUDO_PRIMARY, name,
-				      SZ_256K, len, mm, uaddr,
-				      &address->scudo_primary) ||
-			is_vma_name_valid(true, VMA_NAME_SCUDO_SECONDARY, name,
-					  SZ_64K, len, mm, uaddr,
-					  &address->scudo_secondary);
-		if (b)
-			ret = CHP_VMA_NATIVE;
 		break;
 	default:
 		break;
@@ -3198,6 +3173,9 @@ void __init cont_pte_cma_reserve(void)
 		chp_logi("device does not support cont_pte_huge_page\n");
 		return;
 	}
+
+	/* remove 512M if disable chp on dalvik heap. */
+	cont_pte_pool_cma_size -= ALIGN_DOWN(SZ_512M, CONT_PTE_CMA_CHUNK_SIZE);
 
 #if !CONFIG_CONT_PTE_EXT_MIGRATETYPE
 	res = cma_declare_contiguous(0, cont_pte_pool_cma_size, 0, 0,

@@ -4,6 +4,7 @@
  */
 #include <linux/cpufreq_times.h>
 #include <trace/hooks/sched.h>
+#undef TRACE_INCLUDE_PATH
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 

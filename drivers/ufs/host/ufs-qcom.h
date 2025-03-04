@@ -14,6 +14,9 @@
 #include <linux/panic_notifier.h>
 #include <ufs/ufshcd.h>
 #include <ufs/unipro.h>
+#ifdef CONFIG_UFSFEATURE
+#include "vendor/ufsfeature.h"
+#endif
 
 #define MAX_UFS_QCOM_HOSTS	2
 #define MAX_U32                 (~(u32)0)
@@ -392,6 +395,11 @@ enum ufs_qcom_phy_init_type {
  */
 #define UFS_DEVICE_QUIRK_PA_TX_DEEMPHASIS_TUNING (1 << 17)
 
+/*
+ * Samsung QLC ufs device needs a different set of drivers for HID and TW.
+ * Enable this quirk to config QLC HID & TW on.
+ */
+#define UFS_DEVICE_QUIRK_SAMSUNG_QLC             (1 << 18)
 static inline void
 ufs_qcom_get_controller_revision(struct ufs_hba *hba,
 				 u8 *major, u16 *minor, u16 *step)
@@ -758,6 +766,10 @@ struct ufs_qcom_host {
 	struct notifier_block ufs_qcom_panic_nb;
 	bool broken_ahit_wa;
 	unsigned long active_cmds;
+	bool irq_toggle_affinity_by_ioloading;
+#if defined(CONFIG_UFSFEATURE)
+	struct ufsf_feature ufsf;
+#endif
 };
 
 static inline u32
@@ -878,6 +890,15 @@ struct ufs_ioctl_query_data {
 	 */
 	__u8 buffer[0];
 };
+
+#if defined(CONFIG_UFSFEATURE)
+static inline struct ufsf_feature *ufs_qcom_get_ufsf(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+
+	return &host->ufsf;
+}
+#endif
 
 /* ufs-qcom-ice.c */
 

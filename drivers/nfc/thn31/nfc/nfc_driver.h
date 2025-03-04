@@ -42,7 +42,11 @@ enum nfc_ioctl_request_table {
 };
 
 /*********** PART3: Function or variables for other files ***********/
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
 int nfc_device_probe(struct i2c_client *client, const struct i2c_device_id *id);
+#else
+int nfc_device_probe(struct i2c_client *client);
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0)
 int nfc_device_remove(struct i2c_client *client);
 #else

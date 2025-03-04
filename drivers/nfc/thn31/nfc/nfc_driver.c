@@ -262,7 +262,8 @@ ssize_t nfc_device_read(struct file *file, char __user *buf, size_t count,
         need2byte = true;
         ++count;
     }
-/* malloc read buffer */
+
+    /* malloc read buffer */
     read_buf = devm_kzalloc(nfc->i2c_dev, count, GFP_DMA | GFP_KERNEL);
 
     if (!read_buf) {
@@ -432,6 +433,7 @@ static int nfc_device_open(struct inode *inode, struct file *file)
     if (nfc->open_dev_count == 0) {
         nfc_fw_download_control(nfc, OFF);
         nfc_enable_irq(nfc);
+        nfc_enable_rf_clk(nfc);
     }
 
     nfc->open_dev_count++;
@@ -456,6 +458,7 @@ static int nfc_device_close(struct inode *inode, struct file *file)
     if (nfc->open_dev_count == 1) {
         nfc_disable_irq(nfc);
         nfc_fw_download_control(nfc, OFF);
+        nfc_disable_rf_clk(nfc);
         TMS_DEBUG("Close all NFC device\n");
     }
 
@@ -481,7 +484,11 @@ static const struct file_operations nfc_fops = {
 };
 
 /*********** PART3: NFC Driver Start Area ***********/
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0)
 int nfc_device_probe(struct i2c_client *client, const struct i2c_device_id *id)
+#else
+int nfc_device_probe(struct i2c_client *client)
+#endif
 {
     int ret;
     struct nfc_info *nfc = NULL;
