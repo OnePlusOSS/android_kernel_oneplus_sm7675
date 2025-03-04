@@ -15,7 +15,7 @@
 #undef TMS_MOUDLE
 #define TMS_MOUDLE               "Nfc"
 #endif
-#define NFC_VERSION              TMS_VERSION ".010101"
+#define NFC_VERSION               TMS_VERSION ".010201"
 #define NCI_HDR_LEN               (3)
 #define HEAD_PAYLOAD_BYTE         (2)
 #define MAX_NCI_PAYLOAD_LEN       (255)
@@ -35,7 +35,6 @@ struct nfc_info {
     bool                   ven_enable;       /* store VEN state */
     bool                   release_read;
     bool                   irq_wake_up;
-    bool                   dlpin_flag;
     unsigned int           open_dev_count;
     struct i2c_client      *client;
     struct device          *i2c_dev;         /* Used for i2c->dev */
@@ -65,7 +64,9 @@ void nfc_disable_irq(struct nfc_info *nfc);
 void nfc_enable_irq(struct nfc_info *nfc);
 void nfc_power_control(struct nfc_info *nfc, bool state);
 void nfc_fw_download_control(struct nfc_info *nfc, bool state);
-void nfc_jump_fw(struct i2c_client *client, unsigned int irq_gpio);
 void nfc_hard_reset(struct nfc_info *nfc);
 int nfc_irq_register(struct nfc_info *nfc);
+void nfc_jump_fw(struct i2c_client *client, unsigned int irq_gpio);
+int nfc_enable_rf_clk(struct nfc_info *nfc);
+void nfc_disable_rf_clk(struct nfc_info *nfc);
 #endif /* _TMS_NFC_H_ */

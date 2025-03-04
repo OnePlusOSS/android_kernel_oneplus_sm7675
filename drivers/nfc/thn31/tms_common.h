@@ -50,7 +50,7 @@
 
 /*********** PART2: Define Area ***********/
 #define TMS_MOUDLE                "Common"
-#define TMS_VERSION               "010200"
+#define TMS_VERSION               "010202"
 #define DEVICES_CLASS_NAME        "tms"
 #define OFF                       0    /* Device power off */
 #define ON                        1    /* Device power on */
@@ -58,8 +58,10 @@
 #define ERROR                     1
 #define PAGESIZE                  512
 #define WAIT_TIME_NONE            0
+#define WAIT_TIME_1000US         1000
+#define WAIT_TIME_500US           500
 #define WAIT_TIME_1000US          1000
-#define WAIT_TIME_10000US         10000
+#define WAIT_TIME_5000US          5000
 #define WAIT_TIME_10000US         10000
 #define WAIT_TIME_20000US         20000
 
@@ -84,13 +86,13 @@ static const struct file_operations node_ops = { \
 #endif
 /*********** PART3: Struct Area ***********/
 struct hw_resource {
-    unsigned int    irq_gpio;
-    unsigned int    rst_gpio;
-    unsigned int    ven_gpio;
-    unsigned int    download_gpio; /* nfc fw download control */
-    uint32_t        ven_flag;      /* nfc ven setting flag */
-    uint32_t        download_flag; /* nfc download setting flag */
-    uint32_t        rst_flag;      /* ese reset setting flag */
+    unsigned int        irq_gpio;
+    unsigned int        rst_gpio;
+    unsigned int        ven_gpio;
+    unsigned int        download_gpio; /* nfc fw download control */
+    uint32_t            ven_flag;      /* nfc ven setting flag */
+    uint32_t            download_flag; /* nfc download setting flag */
+    uint32_t            rst_flag;      /* ese reset setting flag */
 };
 
 struct dev_register {
@@ -103,6 +105,12 @@ struct dev_register {
     const struct file_operations    *fops;
 };
 
+struct tms_feature {
+    bool    dl_support : 1; /* DownLoad pin is supported or not */
+    bool    rf_clk_enable_support : 1; /* rf clk control is supported or not, unisoc rf clk need to be controlled */
+    bool    indept_se_support : 1; /* Independent ese support feature*/
+};
+
 struct tms_info {
     bool                        ven_enable; /* store VEN state */
     int                         dev_count;
@@ -110,11 +118,9 @@ struct tms_info {
     struct class                *class;
     struct hw_resource          hw_res;
     struct proc_dir_entry       *prEntry;
+    struct tms_feature          feature;
     int (*registe_device)       (struct dev_register *dev, void *data);
     void (*unregiste_device)    (struct dev_register *dev);
-    void (*set_ven)             (struct hw_resource hw_res, bool state);
-    void (*set_download)        (struct hw_resource hw_res, bool state);
-    void (*set_reset)           (struct hw_resource hw_res, bool state);
     void (*set_gpio)            (unsigned int gpio, bool state,
                                  unsigned long predelay,
                                  unsigned long postdelay);

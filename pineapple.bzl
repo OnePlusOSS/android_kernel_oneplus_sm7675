@@ -84,6 +84,7 @@ def define_pineapple():
         "drivers/misc/vibrator/si_haptic/si_haptic.ko",
         "drivers/input/misc/qpnp-power-on.ko",
         "drivers/leds/aw20198/leds-aw20198.ko",
+        "drivers/leds/aw2023/leds-aw2023.ko",
         "drivers/interconnect/icc-test.ko",
         "drivers/interconnect/qcom/icc-bcm-voter.ko",
         "drivers/interconnect/qcom/icc-debug.ko",

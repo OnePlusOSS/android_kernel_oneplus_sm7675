@@ -14,14 +14,13 @@
 #define ESE_MAX_BUFFER_SIZE      (4096)
 #define ESE_CMD_RSP_TIMEOUT_MS   (2000)
 #define ESE_MAGIC                (0xEA)
-#define ESE_SET_STATE            _IOW(ESE_MAGIC, 0x01, long)
-#define ESE_SPI_CLK_CONTROL      _IOW(ESE_MAGIC, 0xFF, long)  /* MTK TEE set SE SPI clock on/off */
+#define ESE_SET_POWER            _IOW(ESE_MAGIC, 0x01, long)
+#define ESE_HARD_RESET           _IOW(ESE_MAGIC, 0x02, long) /* Independent ese hard reset */
+#define ESE_SPI_CLK_CONTROL      _IOW(ESE_MAGIC, 0xFF, long) /* MTK TEE set SE SPI clock on/off */
 
 enum ese_ioctl_request_table {
     ESE_POWER_OFF     = 11,  /* ESE power off with ven low */
     ESE_POWER_ON      = 10,  /* ESE power on with ven high */
-    ESE_COS_DWNLD_OFF = 12,  /* ESE firmware download gpio low */
-    ESE_COS_DWNLD_ON  = 13,  /* ESE firmware download gpio high */
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)

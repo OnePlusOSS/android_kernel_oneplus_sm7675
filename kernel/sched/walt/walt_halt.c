@@ -392,13 +392,18 @@ static void update_clients(struct cpumask *cpus, bool halt, enum pause_client cl
 {
 	int cpu;
 	struct halt_cpu_state *halt_cpu_state;
+	int *pause_client_state;
 
 	for_each_cpu(cpu, cpus) {
 		halt_cpu_state = per_cpu_ptr(&halt_state, cpu);
-		if (halt)
+		pause_client_state = per_cpu_ptr(oplus_cur_pause_client, cpu);
+		if (halt) {
+			pause_client_state[type] |= client;
 			halt_cpu_state->client_vote_mask[type] |=  client;
-		else
+		}else {
+			pause_client_state[type] &= ~client;
 			halt_cpu_state->client_vote_mask[type] &= ~client;
+		}
 	}
 }
 
@@ -441,6 +446,11 @@ static int walt_halt_cpus(struct cpumask *cpus, enum pause_client client, enum p
 			 cpumask_pr_args(&requested_cpus));
 	else
 		update_clients(&requested_cpus, true, client, type);
+
+	cpumask_copy(&cur_cpus_halt_mask, cpu_halt_mask);
+	cpumask_copy(&cur_cpus_phalt_mask, cpu_partial_halt_mask);
+	sa_corectl_systrace_c();
+
 unlock:
 	raw_spin_unlock_irqrestore(&halt_lock, flags);
 
@@ -486,6 +496,9 @@ static int walt_start_cpus(struct cpumask *cpus, enum pause_client client, enum 
 		update_clients(&requested_cpus, true, client, type);
 	}
 
+	cpumask_copy(&cur_cpus_halt_mask, cpu_halt_mask);
+	cpumask_copy(&cur_cpus_phalt_mask, cpu_partial_halt_mask);
+	sa_corectl_systrace_c();
 	raw_spin_unlock_irqrestore(&halt_lock, flags);
 
 	return ret;
