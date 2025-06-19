@@ -145,12 +145,14 @@ static inline void rwsem_set_owner(struct rw_semaphore *sem)
 {
 	lockdep_assert_preemption_disabled();
 	atomic_long_set(&sem->owner, (long)current);
+	trace_android_vh_record_rwsem_writer_owned(sem);
 }
 
 static inline void rwsem_clear_owner(struct rw_semaphore *sem)
 {
 	lockdep_assert_preemption_disabled();
 	atomic_long_set(&sem->owner, 0);
+	trace_android_vh_clear_rwsem_writer_owned(sem);
 }
 
 /*
@@ -183,6 +185,7 @@ static inline void __rwsem_set_reader_owned(struct rw_semaphore *sem,
 static inline void rwsem_set_reader_owned(struct rw_semaphore *sem)
 {
 	__rwsem_set_reader_owned(sem, current);
+	trace_android_vh_record_rwsem_reader_owned(sem, NULL);
 }
 
 /*
@@ -213,6 +216,7 @@ static inline void rwsem_clear_reader_owned(struct rw_semaphore *sem)
 {
 	unsigned long val = atomic_long_read(&sem->owner);
 
+	trace_android_vh_clear_rwsem_reader_owned(sem);
 	while ((val & ~RWSEM_OWNER_FLAGS_MASK) == (unsigned long)current) {
 		if (atomic_long_try_cmpxchg(&sem->owner, &val,
 					    val & RWSEM_OWNER_FLAGS_MASK))
@@ -222,6 +226,7 @@ static inline void rwsem_clear_reader_owned(struct rw_semaphore *sem)
 #else
 static inline void rwsem_clear_reader_owned(struct rw_semaphore *sem)
 {
+	trace_android_vh_clear_rwsem_reader_owned(sem);
 }
 #endif
 
@@ -244,6 +249,8 @@ static inline void rwsem_set_nonspinnable(struct rw_semaphore *sem)
 
 static inline bool rwsem_read_trylock(struct rw_semaphore *sem, long *cntp)
 {
+	int ret = 0;
+
 	*cntp = atomic_long_add_return_acquire(RWSEM_READER_BIAS, &sem->count);
 
 	if (WARN_ON_ONCE(*cntp < 0))
@@ -253,6 +260,13 @@ static inline bool rwsem_read_trylock(struct rw_semaphore *sem, long *cntp)
 		rwsem_set_reader_owned(sem);
 		trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
 		rwsem_lock_handler((u64)sem, current, jiffies);
+		return true;
+	}
+
+	trace_android_vh_rwsem_read_trylock_failed(sem, cntp, &ret);
+	if (ret) {
+		rwsem_set_reader_owned(sem);
+		trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
 		return true;
 	}
 
@@ -338,6 +352,8 @@ void __init_rwsem(struct rw_semaphore *sem, const char *name,
 #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
 	osq_lock_init(&sem->osq);
 #endif
+	android_init_vendor_data(sem, 1);
+	android_init_oem_data(sem, 1);
 	trace_android_vh_rwsem_init(sem);
 }
 EXPORT_SYMBOL(__init_rwsem);
@@ -556,6 +572,7 @@ static void rwsem_mark_wake(struct rw_semaphore *sem,
 
 	if (adjustment)
 		atomic_long_add(adjustment, &sem->count);
+	trace_android_vh_record_rwsem_reader_owned(sem, &wlist);
 
 	/* 2nd pass */
 	list_for_each_entry_safe(waiter, tmp, &wlist, list) {
@@ -1364,6 +1381,15 @@ static inline int __down_read_trylock(struct rw_semaphore *sem)
 			break;
 		}
 	}
+
+	if (!ret) {
+		trace_android_vh_rwsem_read_trylock_failed(sem, NULL, &ret);
+		if (ret) {
+			rwsem_set_reader_owned(sem);
+			trace_android_vh_record_rwsem_lock_starttime(current, jiffies);
+		}
+	}
+
 	preempt_enable();
 	return ret;
 }
@@ -1371,7 +1397,7 @@ static inline int __down_read_trylock(struct rw_semaphore *sem)
 /*
  * lock for writing
  */
-static inline int __down_write_common(struct rw_semaphore *sem, int state)
+static __always_inline int __down_write_common(struct rw_semaphore *sem, int state)
 {
 	if (unlikely(!rwsem_write_trylock(sem))) {
 		if (IS_ERR(rwsem_down_write_slowpath(sem, state)))
@@ -1381,12 +1407,12 @@ static inline int __down_write_common(struct rw_semaphore *sem, int state)
 	return 0;
 }
 
-static inline void __down_write(struct rw_semaphore *sem)
+static __always_inline void __down_write(struct rw_semaphore *sem)
 {
 	__down_write_common(sem, TASK_UNINTERRUPTIBLE);
 }
 
-static inline int __down_write_killable(struct rw_semaphore *sem)
+static __always_inline int __down_write_killable(struct rw_semaphore *sem)
 {
 	return __down_write_common(sem, TASK_KILLABLE);
 }

@@ -65,7 +65,8 @@ static int clk_mt8186_mcu_probe(struct platform_device *pdev)
 		goto free_mcu_data;
 	}
 
-	r = mtk_clk_register_composites(mcu_muxes, ARRAY_SIZE(mcu_muxes), base,
+	r = mtk_clk_register_composites(&pdev->dev, mcu_muxes,
+					ARRAY_SIZE(mcu_muxes), base,
 					NULL, clk_data);
 	if (r)
 		goto free_mcu_data;
@@ -105,4 +106,5 @@ static struct platform_driver clk_mt8186_mcu_drv = {
 		.of_match_table = of_match_clk_mt8186_mcu,
 	},
 };
-builtin_platform_driver(clk_mt8186_mcu_drv);
+module_platform_driver(clk_mt8186_mcu_drv);
+MODULE_LICENSE("GPL");

@@ -131,7 +131,8 @@ static int clk_mt8195_vdo1_probe(struct platform_device *pdev)
 	if (!clk_data)
 		return -ENOMEM;
 
-	r = mtk_clk_register_gates(node, vdo1_clks, ARRAY_SIZE(vdo1_clks), clk_data);
+	r = mtk_clk_register_gates(&pdev->dev, node, vdo1_clks,
+				   ARRAY_SIZE(vdo1_clks), clk_data);
 	if (r)
 		goto free_vdo1_data;
 
@@ -170,4 +171,5 @@ static struct platform_driver clk_mt8195_vdo1_drv = {
 		.name = "clk-mt8195-vdo1",
 	},
 };
-builtin_platform_driver(clk_mt8195_vdo1_drv);
+module_platform_driver(clk_mt8195_vdo1_drv);
+MODULE_LICENSE("GPL");

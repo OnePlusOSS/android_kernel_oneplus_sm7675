@@ -505,8 +505,8 @@ bool uxmem_should_alloc_pages_retry(gfp_t gfp_mask, unsigned int *alloc_flags,
 
 	if (unlikely(current_is_key_task()) && !in_interrupt() &&
 		(preferred_zone->nr_reserved_highatomic >= (SZ_8M >> PAGE_SHIFT)) &&
-		!(*alloc_flags & (ALLOC_HARDER|ALLOC_OOM)) && !(gfp_mask & __GFP_NORETRY)) {
-		*alloc_flags |= ALLOC_HARDER;
+		!(*alloc_flags & ALLOC_RESERVES) && !(gfp_mask & __GFP_NORETRY)) {
+		*alloc_flags |= ALLOC_NON_BLOCK;
 		return true;
 	} else
 		return false;

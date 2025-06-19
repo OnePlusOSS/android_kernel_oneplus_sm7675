@@ -16,6 +16,18 @@
 #include <linux/sysfs.h>
 #include <linux/pm_qos.h>
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_CEILING_FREE)
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING)
+#include <linux/cpufreq_bouncing.h>
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_OMRG)
+#include <linux/oplus_omrg.h>
+#endif
+
+#endif
+
 #include "walt.h"
 
 #define input_boost_attr_rw(_name)		\
@@ -115,6 +127,22 @@ static void do_input_boost_rem(struct work_struct *work)
 		i_sync_info->input_boost_min = 0;
 	}
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_CEILING_FREE)
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING)
+	if (sysctl_ceiling_free_enable) {
+		cb_ceiling_free(false);
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_OMRG)
+	if (sysctl_ceiling_free_enable) {
+		omrg_ceiling_free(false);
+	}
+#endif
+
+#endif
+
 	/* Update policies for all online CPUs */
 	update_policy_online();
 
@@ -143,6 +171,21 @@ static void do_input_boost(struct work_struct *work)
 		i_sync_info = &per_cpu(sync_info, cpu);
 		i_sync_info->input_boost_min = sysctl_input_boost_freq[cpu];
 	}
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_CEILING_FREE)
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING)
+	if (sysctl_ceiling_free_enable) {
+		cb_ceiling_free(true);
+	}
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_OMRG)
+	if (sysctl_ceiling_free_enable) {
+		omrg_ceiling_free(true);
+	}
+#endif
+
+#endif
 
 	/* Update policies for all online CPUs */
 	update_policy_online();

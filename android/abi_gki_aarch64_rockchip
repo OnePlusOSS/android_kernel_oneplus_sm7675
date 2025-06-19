@@ -144,6 +144,14 @@
   __crypto_xor
   csum_partial
   _ctype
+  debugfs_attr_read
+  debugfs_attr_write
+  debugfs_create_dir
+  debugfs_create_file
+  debugfs_create_regset32
+  debugfs_lookup
+  debugfs_remove
+  debugfs_rename
   default_llseek
   delayed_work_timer_fn
   del_timer
@@ -192,6 +200,7 @@
   devm_clk_bulk_get
   devm_clk_bulk_get_all
   devm_clk_get
+  devm_clk_get_enabled
   devm_clk_get_optional
   devm_clk_hw_register
   devm_clk_register
@@ -244,6 +253,7 @@
   __devm_regmap_init_i2c
   __devm_regmap_init_mmio_clk
   devm_regulator_bulk_get
+  devm_regulator_bulk_get_enable
   devm_regulator_get
   devm_regulator_get_optional
   devm_regulator_register
@@ -259,6 +269,8 @@
   devm_usb_get_phy
   _dev_notice
   dev_open
+  dev_pm_domain_attach_by_name
+  dev_pm_domain_detach
   dev_pm_opp_clear_config
   dev_pm_opp_disable
   dev_pm_opp_find_freq_ceil
@@ -1105,6 +1117,7 @@
   snd_soc_daifmt_parse_clock_provider_raw
   snd_soc_daifmt_parse_format
   snd_soc_dai_set_sysclk
+  snd_soc_dai_set_tdm_slot
   snd_soc_dapm_add_routes
   snd_soc_dapm_disable_pin_unlocked
   snd_soc_dapm_force_enable_pin_unlocked
@@ -1121,12 +1134,14 @@
   snd_soc_info_volsw
   snd_soc_jack_add_gpios
   snd_soc_jack_report
+  snd_soc_lookup_component
   snd_soc_of_parse_audio_routing
   snd_soc_of_parse_card_name
   snd_soc_params_to_frame_size
   snd_soc_pm_ops
   snd_soc_put_enum_double
   snd_soc_put_volsw
+  snd_soc_set_runtime_hwparams
   snd_soc_unregister_component
   snprintf
   sort
@@ -1235,9 +1250,12 @@
   usb_hcd_resume_root_hub
   usb_hcd_unlink_urb_from_ep
   usb_hid_driver
+  usbnet_cdc_unbind
+  usbnet_cdc_zte_rx_fixup
   usbnet_change_mtu
   usbnet_defer_kevent
   usbnet_disconnect
+  usbnet_generic_cdc_bind
   usbnet_get_drvinfo
   usbnet_get_endpoints
   usbnet_get_link
@@ -1433,6 +1451,10 @@
   sdio_readw
   sdio_register_driver
   sdio_release_host
+  sdio_retune_crc_disable
+  sdio_retune_crc_enable
+  sdio_retune_hold_now
+  sdio_retune_release
   sdio_set_block_size
   sdio_set_host_pm_flags
   sdio_unregister_driver
@@ -1457,6 +1479,7 @@
   clear_page
   __ClearPageMovable
   complete_all
+  debugfs_create_bool
   devfreq_add_device
   devfreq_cooling_em_register
   devfreq_cooling_unregister
@@ -1751,6 +1774,8 @@
   mmc_send_tuning
 
 # required by dw_mmc.ko
+  debugfs_create_u32
+  debugfs_create_x64
   device_property_read_string_array
   mmc_add_host
   mmc_alloc_host
@@ -1952,6 +1977,7 @@
   scsi_remove_device
   scsi_remove_host
   scsi_rescan_device
+  scsi_resume_device
   scsi_schedule_eh
   scsi_sense_desc_find
   scsi_set_sense_field_pointer
@@ -2079,6 +2105,7 @@
 # required by pcie-dw-rockchip.ko
   device_release_driver
   dw_pcie_find_ext_capability
+  dw_pcie_host_deinit
   dw_pcie_host_init
   dw_pcie_link_up
   dw_pcie_read
@@ -2095,6 +2122,7 @@
   devm_pci_remap_cfg_resource
   jiffies_to_usecs
   of_pci_get_max_link_speed
+  of_pci_get_slot_power_limit
   pci_host_probe
   pci_remove_root_bus
   pci_stop_root_bus
@@ -2182,6 +2210,47 @@
   gpiod_set_array_value_cansleep
   mmc_pwrseq_register
   mmc_pwrseq_unregister
+
+# required by r8168.ko
+  csum_ipv6_magic
+  netif_set_tso_max_segs
+  netif_set_tso_max_size
+  pci_choose_state
+  pci_clear_master
+  pci_clear_mwi
+  pci_disable_msi
+  pci_disable_msix
+  pci_enable_device
+  pci_enable_msi
+  pci_enable_msix_range
+  pci_enable_wake
+  pci_get_slot
+  pci_release_regions
+  pci_request_regions
+  pci_set_mwi
+  pci_wake_from_d3
+  pci_write_config_byte
+  proc_get_parent_data
+  proc_mkdir_data
+
+# required by realtek.ko
+  genphy_handle_interrupt_no_ack
+  genphy_read_abilities
+  genphy_read_mmd_unsupported
+  genphy_update_link
+  genphy_write_mmd_unsupported
+  __mdiobus_read
+  __mdiobus_write
+  phy_basic_t1_features
+  __phy_modify
+  phy_modify
+  phy_modify_changed
+  phy_modify_paged
+  phy_modify_paged_changed
+  phy_read_paged
+  phy_restore_page
+  phy_select_page
+  phy_write_paged
 
 # required by reboot-mode.ko
   devres_release
@@ -2281,12 +2350,12 @@
   reserve_iova
 
 # required by rknpu.ko
-  dev_pm_domain_attach_by_name
-  dev_pm_domain_detach
+  alloc_iova
   drm_gem_handle_delete
   drm_gem_mmap_obj
   drm_gem_prime_export
   drm_gem_prime_import_dev
+  free_iova
   of_dma_configure_id
   set_user_nice
   vmf_insert_mixed
@@ -2392,7 +2461,10 @@
   devm_of_phy_get_by_index
   driver_find_device
   drm_aperture_remove_conflicting_framebuffers
+  drm_atomic_add_encoder_bridges
+  drm_atomic_bridge_chain_check
   drm_atomic_commit
+  drm_atomic_get_bridge_state
   drm_atomic_get_plane_state
   drm_atomic_helper_check
   drm_atomic_helper_check_plane_state
@@ -2437,6 +2509,8 @@
   drm_crtc_vblank_off
   drm_crtc_vblank_on
   drm_crtc_vblank_put
+  drm_debugfs_create_files
+  drm_debugfs_remove_files
   drm_do_get_edid
   drm_encoder_cleanup
   drm_encoder_init
@@ -2651,6 +2725,19 @@
 # required by snd-soc-rockchip-hdmi.ko
   snd_soc_dapm_new_widgets
 
+# required by snd-soc-rockchip-multi-dais.ko
+  dma_get_slave_caps
+  snd_hwparams_to_dma_slave_config
+  snd_pcm_lib_free_pages
+  snd_pcm_lib_ioctl
+  snd_pcm_lib_malloc_pages
+  snd_pcm_lib_preallocate_pages
+  snd_pcm_stream_lock_irq
+  snd_pcm_stream_unlock_irq
+  snd_soc_dai_set_fmt
+  snd_soc_find_dai_with_mutex
+  snd_soc_rtdcom_lookup
+
 # required by snd-soc-rockchip-multicodecs.ko
   snd_soc_dapm_get_pin_switch
   snd_soc_dapm_info_pin_switch
@@ -2661,16 +2748,33 @@
 # required by snd-soc-rockchip-spdif.ko
   snd_pcm_create_iec958_consumer_hw_params
 
+# required by snd-soc-rockchip-trcm.ko
+  snd_dmaengine_pcm_prepare_slave_config
+  snd_dmaengine_pcm_refine_runtime_hwparams
+  snd_dmaengine_pcm_set_config_from_dai_data
+  snd_pcm_format_size
+  snd_pcm_hw_constraint_integer
+  snd_pcm_period_elapsed
+  snd_pcm_set_managed_buffer
+  snd_soc_add_component
+  snd_soc_component_initialize
+  snd_soc_set_runtime_hwparams
+  snd_soc_unregister_component_by_driver
+  strscpy_pad
+
+# required by snd-soc-rockchip.ko
+  snd_pcm_format_physical_width
+
 # required by snd-soc-rt5640.ko
   regmap_register_patch
   snd_soc_dapm_force_bias_level
 
 # required by snd-soc-simple-card-utils.ko
+  devm_get_clk_from_child
   devm_kvasprintf
   snd_pcm_hw_constraint_minmax
   snd_soc_component_set_sysclk
   snd_soc_dai_active
-  snd_soc_dai_set_tdm_slot
   snd_soc_of_parse_audio_simple_widgets
   snd_soc_of_parse_pin_switches
   snd_soc_runtime_calc_hw
@@ -2857,6 +2961,25 @@
   crypto_register_alg
   crypto_unregister_alg
 
+# required by ufs-rockchip.ko
+  ufshcd_config_pwr_mode
+  ufshcd_dealloc_host
+  ufshcd_dme_set_attr
+  ufshcd_hba_enable
+  ufshcd_hba_stop
+  ufshcd_hold
+  ufshcd_make_hba_operational
+  ufshcd_pltfrm_init
+  ufshcd_pltfrm_shutdown
+  ufshcd_release
+  ufshcd_remove
+  ufshcd_resume_complete
+  ufshcd_runtime_resume
+  ufshcd_runtime_suspend
+  ufshcd_suspend_prepare
+  ufshcd_system_resume
+  ufshcd_system_suspend
+
 # required by usblp.ko
   add_wait_queue
   default_wake_function
@@ -2901,3 +3024,29 @@
 
 # required by vl6180.ko
   iio_read_const_attr
+
+# required by aic_btusb.ko
+  usb_disable_autosuspend
+
+# required by wlan_mt7663_usb.ko
+  usb_anchor_empty
+  usb_reset_endpoint
+
+# required by dw_hdmi_qp.ko
+  drm_edid_alloc
+  drm_edid_read_ddc
+  drm_edid_raw
+  drm_edid_connector_update
+
+# required by 8250_dw.ko
+  serial8250_em485_supported
+  serial8250_em485_start_tx
+  serial8250_em485_stop_tx
+  serial8250_em485_config
+  serial8250_do_set_divisor
+  serial8250_do_set_ldisc
+  serial8250_update_uartclk
+  serial8250_clear_and_reinit_fifos
+
+# required by pl2303.ko
+  tty_termios_hw_change

@@ -719,6 +719,7 @@ static inline unsigned long walt_em_cpu_energy(struct em_perf_domain *pd,
 
 #if defined(CONFIG_OPLUS_FEATURE_SUGOV_TL) || defined(CONFIG_OPLUS_UAG_USE_TL)
 	struct cpufreq_policy policy;
+	unsigned int tl;
 	unsigned long raw_util = max_util;
 #endif
 
@@ -734,8 +735,10 @@ static inline unsigned long walt_em_cpu_energy(struct em_perf_domain *pd,
 	scale_cpu = arch_scale_cpu_capacity(cpu);
 
 #if defined(CONFIG_OPLUS_FEATURE_SUGOV_TL) || defined(CONFIG_OPLUS_UAG_USE_TL)
-	if (!cpufreq_get_policy(&policy, cpu))
-		trace_android_vh_map_util_freq(max_util, max_util, max_util, &max_util, &policy, NULL);
+	if (!cpufreq_get_policy(&policy, cpu)) {
+		tl = get_targetload(&policy);
+		max_util = max_util * 100 / tl;
+	}
 
 	if (max_util == raw_util)
 		max_util = max_util + (max_util >> 2); /* account  for TARGET_LOAD usually 80 */

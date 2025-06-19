@@ -121,7 +121,28 @@ static const struct address_space_operations incfs_address_space_ops = {
 
 static vm_fault_t incfs_fault(struct vm_fault *vmf)
 {
-	vmf->flags &= ~FAULT_FLAG_ALLOW_RETRY;
+	struct file *file = vmf->vma->vm_file;
+	struct data_file *df = get_incfs_data_file(file);
+	struct backing_file_context *bfc = df ? df->df_backing_file_context : NULL;
+
+	/*
+	 * This is something of a kludge
+	 * We want to retry if the read from the underlying file is interrupted,
+	 * but not if the read fails because the stored data is corrupt since the
+	 * latter causes an infinite loop.
+	 *
+	 * However, whether we wish to retry must be set before we call
+	 * filemap_fault, *and* there is no way of getting the read error code out
+	 * of filemap_fault.
+	 *
+	 * So unless there is a robust solution to both the above problems, we can
+	 * solve the actual issues we have encoutered by retrying unless there is
+	 * known corruption in the backing file. This does mean that we won't retry
+	 * with a corrupt backing file if a (good) read is interrupted, but we
+	 * don't really handle corruption well anyway at this time.
+	 */
+	if (bfc && bfc->bc_has_bad_block)
+		vmf->flags &= ~FAULT_FLAG_ALLOW_RETRY;
 	return filemap_fault(vmf);
 }
 
@@ -541,13 +562,15 @@ static int read_folio(struct file *f, struct folio *folio)
 	struct page *page = &folio->page;
 	loff_t offset = 0;
 	loff_t size = 0;
-	ssize_t bytes_to_read = 0;
-	ssize_t read_result = 0;
+	ssize_t total_read = 0;
 	struct data_file *df = get_incfs_data_file(f);
 	int result = 0;
 	void *page_start;
 	int block_index;
 	unsigned int delayed_min_us = 0;
+	struct mem_range tmp = {
+		.len = 2 * INCFS_DATA_FILE_BLOCK_SIZE
+	};
 
 	if (!df) {
 		SetPageError(page);
@@ -561,32 +584,46 @@ static int read_folio(struct file *f, struct folio *folio)
 		INCFS_DATA_FILE_BLOCK_SIZE;
 	size = df->df_size;
 
-	if (offset < size) {
-		struct mem_range tmp = {
-			.len = 2 * INCFS_DATA_FILE_BLOCK_SIZE
-		};
-		tmp.data = (u8 *)__get_free_pages(GFP_NOFS, get_order(tmp.len));
-		if (!tmp.data) {
-			read_result = -ENOMEM;
-			goto err;
-		}
-		bytes_to_read = min_t(loff_t, size - offset, PAGE_SIZE);
-
-		read_result = read_single_page_timeouts(df, f, block_index,
-					range(page_start, bytes_to_read), tmp,
-					&delayed_min_us);
-
-		free_pages((unsigned long)tmp.data, get_order(tmp.len));
-	} else {
-		bytes_to_read = 0;
-		read_result = 0;
+	tmp.data = kzalloc(tmp.len, GFP_NOFS);
+	if (!tmp.data) {
+		result = -ENOMEM;
+		goto err;
 	}
 
+	while (offset + total_read < size) {
+		ssize_t bytes_to_read = min_t(loff_t,
+					      size - offset - total_read,
+					      INCFS_DATA_FILE_BLOCK_SIZE);
+
+		result = read_single_page_timeouts(df, f, block_index,
+				range(page_start + total_read, bytes_to_read),
+				tmp, &delayed_min_us);
+		if (result < 0)
+			break;
+
+		total_read += result;
+		block_index++;
+
+		if (result < INCFS_DATA_FILE_BLOCK_SIZE)
+			break;
+		if (total_read == PAGE_SIZE)
+			break;
+	}
+	kfree(tmp.data);
 err:
-	if (read_result < 0)
-		result = read_result;
-	else if (read_result < PAGE_SIZE)
-		zero_user(page, read_result, PAGE_SIZE - read_result);
+	if (result < 0)
+		total_read = 0;
+	else
+		result = 0;
+	if (total_read < PAGE_SIZE)
+		zero_user(page, total_read, PAGE_SIZE - total_read);
+
+	if (result == -EBADMSG) {
+		struct backing_file_context *bfc = df ? df->df_backing_file_context : NULL;
+
+		if (bfc)
+			bfc->bc_has_bad_block = 1;
+	}
 
 	if (result == 0)
 		SetPageUptodate(page);
@@ -770,8 +807,7 @@ static long ioctl_fill_blocks(struct file *f, void __user *arg)
 		return -EFAULT;
 
 	usr_fill_block_array = u64_to_user_ptr(fill_blocks.fill_blocks);
-	data_buf = (u8 *)__get_free_pages(GFP_NOFS | __GFP_COMP,
-					  get_order(data_buf_size));
+	data_buf = (u8 *)kzalloc(data_buf_size, GFP_NOFS);
 	if (!data_buf)
 		return -ENOMEM;
 
@@ -806,8 +842,7 @@ static long ioctl_fill_blocks(struct file *f, void __user *arg)
 			break;
 	}
 
-	if (data_buf)
-		free_pages((unsigned long)data_buf, get_order(data_buf_size));
+	kfree(data_buf);
 
 	if (complete)
 		handle_file_completed(f, df);
@@ -1806,8 +1841,6 @@ struct dentry *incfs_mount_fs(struct file_system_type *type, int flags,
 	sb->s_blocksize = INCFS_DATA_FILE_BLOCK_SIZE;
 	sb->s_blocksize_bits = blksize_bits(sb->s_blocksize);
 	sb->s_xattr = incfs_xattr_ops;
-
-	BUILD_BUG_ON(PAGE_SIZE != INCFS_DATA_FILE_BLOCK_SIZE);
 
 	if (!dev_name) {
 		pr_err("incfs: Backing dir is not set, filesystem can't be mounted.\n");

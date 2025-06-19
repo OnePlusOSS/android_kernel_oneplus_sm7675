@@ -60,6 +60,7 @@
   __netif_schedule
   neigh_xmit
   netif_receive_skb_core
+  __netif_schedule
   nf_ct_attach
   nf_ct_delete
   nf_register_net_hook
@@ -127,6 +128,7 @@
   tcf_exts_dump_stats
   tcf_exts_validate
   tcf_queue_work
+  tcp_cong_avoid_ai
   __traceiter_android_rvh_post_init_entity_util_avg
   __traceiter_android_rvh_rtmutex_force_update
   __traceiter_android_vh_account_process_tick_gran
@@ -188,6 +190,7 @@
   __traceiter_android_vh_cleanup_old_buffers_bypass
   __traceiter_android_vh_dm_bufio_shrink_scan_bypass
   __traceiter_android_vh_mutex_unlock_slowpath
+  __traceiter_android_vh_read_lazy_flag
   __traceiter_android_vh_rtmutex_waiter_prio
   __traceiter_android_vh_rt_mutex_steal
   __traceiter_android_vh_rwsem_can_spin_on_owner
@@ -203,6 +206,7 @@
   __traceiter_android_vh_tick_nohz_idle_stop_tick
   __traceiter_android_vh_shrink_node_memcgs
   __traceiter_android_vh_sync_txn_recvd
+  __traceiter_android_vh_set_tsk_need_resched_lazy
   __traceiter_android_vh_task_blocks_on_rtmutex
   __traceiter_android_vh_task_ux_op
   __traceiter_block_bio_queue
@@ -302,6 +306,7 @@
   __tracepoint_android_vh_record_mutex_lock_starttime
   __tracepoint_android_vh_record_pcpu_rwsem_starttime
   __tracepoint_android_vh_percpu_rwsem_wq_add
+  __tracepoint_android_vh_read_lazy_flag
   __tracepoint_android_vh_record_rtmutex_lock_starttime
   __tracepoint_android_vh_record_rwsem_lock_starttime
   __tracepoint_android_vh_rtmutex_waiter_prio
@@ -319,7 +324,7 @@
   __tracepoint_android_vh_tick_nohz_idle_stop_tick
   __tracepoint_android_vh_shrink_node_memcgs
   __tracepoint_android_vh_sync_txn_recvd
-  __tracepoint_android_vh_tune_swappiness
+  __tracepoint_android_vh_set_tsk_need_resched_lazy
   __tracepoint_android_vh_task_blocks_on_rtmutex
   __tracepoint_android_vh_task_ux_op
   __tracepoint_android_vh_test_clear_look_around_ref
