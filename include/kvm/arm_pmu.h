@@ -8,7 +8,7 @@
 #define __ASM_ARM_KVM_PMU_H
 
 #include <linux/perf_event.h>
-#include <asm/perf_event.h>
+#include <linux/perf/arm_pmuv3.h>
 
 #define ARMV8_PMU_CYCLE_IDX		(ARMV8_PMU_MAX_COUNTERS - 1)
 
@@ -85,7 +85,7 @@ void kvm_vcpu_pmu_restore_host(struct kvm_vcpu *vcpu);
  */
 #define kvm_pmu_update_vcpu_events(vcpu)				\
 	do {								\
-		if (!has_vhe() && kvm_vcpu_has_pmu(vcpu))		\
+		if (!has_vhe() && kvm_arm_support_pmu_v3())		\
 			vcpu->arch.pmu.events = *kvm_get_pmu_events();	\
 	} while (0)
 

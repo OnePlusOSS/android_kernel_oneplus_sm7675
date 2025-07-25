@@ -124,7 +124,8 @@ static int clk_mt8195_apmixed_probe(struct platform_device *pdev)
 	if (r)
 		goto free_apmixed_data;
 
-	r = mtk_clk_register_gates(node, apmixed_clks, ARRAY_SIZE(apmixed_clks), clk_data);
+	r = mtk_clk_register_gates(&pdev->dev, node, apmixed_clks,
+				   ARRAY_SIZE(apmixed_clks), clk_data);
 	if (r)
 		goto unregister_plls;
 
@@ -166,4 +167,5 @@ static struct platform_driver clk_mt8195_apmixed_drv = {
 		.of_match_table = of_match_clk_mt8195_apmixed,
 	},
 };
-builtin_platform_driver(clk_mt8195_apmixed_drv);
+module_platform_driver(clk_mt8195_apmixed_drv);
+MODULE_LICENSE("GPL");

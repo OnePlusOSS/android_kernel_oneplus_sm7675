@@ -22,12 +22,16 @@
  * @chan: Transmit/Receive mailbox channel
  * @cinfo: SCMI channel info
  * @shmem: Transmit/Receive shared memory area
+ * @chan_lock: Lock that prevents multiple xfers from being queued
+ * @io_ops: Transport specific I/O operations
  */
 struct scmi_mailbox {
 	struct mbox_client cl;
 	struct mbox_chan *chan;
 	struct scmi_chan_info *cinfo;
 	struct scmi_shared_mem __iomem *shmem;
+	struct mutex chan_lock;
+	struct scmi_shmem_io_ops *io_ops;
 };
 
 #define client_to_scmi_mailbox(c) container_of(c, struct scmi_mailbox, cl)
@@ -36,12 +40,27 @@ static void tx_prepare(struct mbox_client *cl, void *m)
 {
 	struct scmi_mailbox *smbox = client_to_scmi_mailbox(cl);
 
-	shmem_tx_prepare(smbox->shmem, m, smbox->cinfo);
+	shmem_tx_prepare(smbox->shmem, m, smbox->cinfo,
+			 smbox->io_ops->toio);
 }
 
 static void rx_callback(struct mbox_client *cl, void *m)
 {
 	struct scmi_mailbox *smbox = client_to_scmi_mailbox(cl);
+
+	/*
+	 * An A2P IRQ is NOT valid when received while the platform still has
+	 * the ownership of the channel, because the platform at first releases
+	 * the SMT channel and then sends the completion interrupt.
+	 *
+	 * This addresses a possible race condition in which a spurious IRQ from
+	 * a previous timed-out reply which arrived late could be wrongly
+	 * associated with the next pending transaction.
+	 */
+	if (cl->knows_txdone && !shmem_channel_free(smbox->shmem)) {
+		dev_warn(smbox->cinfo->dev, "Ignoring spurious A2P IRQ !\n");
+		return;
+	}
 
 	scmi_rx_callback(smbox->cinfo, shmem_read_header(smbox->shmem), NULL);
 }
@@ -131,6 +150,7 @@ static int mailbox_chan_setup(struct scmi_chan_info *cinfo, struct device *dev,
 	cl->rx_callback = rx_callback;
 	cl->tx_block = false;
 	cl->knows_txdone = tx;
+	smbox->io_ops = shmem_get_io_ops(shmem);
 
 	smbox->chan = mbox_request_channel(cl, tx ? 0 : 1);
 	if (IS_ERR(smbox->chan)) {
@@ -143,6 +163,7 @@ static int mailbox_chan_setup(struct scmi_chan_info *cinfo, struct device *dev,
 
 	cinfo->transport_info = smbox;
 	smbox->cinfo = cinfo;
+	mutex_init(&smbox->chan_lock);
 
 	return 0;
 }
@@ -170,13 +191,23 @@ static int mailbox_send_message(struct scmi_chan_info *cinfo,
 	struct scmi_mailbox *smbox = cinfo->transport_info;
 	int ret;
 
+	/*
+	 * The mailbox layer has its own queue. However the mailbox queue confuses
+	 * the per message SCMI timeouts since the clock starts when the message is
+	 * submitted into the mailbox queue. So when multiple messages are queued up
+	 * the clock starts on all messages instead of only the one inflight.
+	 */
+	mutex_lock(&smbox->chan_lock);
+
 	ret = mbox_send_message(smbox->chan, xfer);
 
 	/* mbox_send_message returns non-negative value on success, so reset */
-	if (ret > 0)
-		ret = 0;
+	if (ret < 0) {
+		mutex_unlock(&smbox->chan_lock);
+		return ret;
+	}
 
-	return ret;
+	return 0;
 }
 
 static void mailbox_mark_txdone(struct scmi_chan_info *cinfo, int ret,
@@ -184,13 +215,10 @@ static void mailbox_mark_txdone(struct scmi_chan_info *cinfo, int ret,
 {
 	struct scmi_mailbox *smbox = cinfo->transport_info;
 
-	/*
-	 * NOTE: we might prefer not to need the mailbox ticker to manage the
-	 * transfer queueing since the protocol layer queues things by itself.
-	 * Unfortunately, we have to kick the mailbox framework after we have
-	 * received our message.
-	 */
 	mbox_client_txdone(smbox->chan, ret);
+
+	/* Release channel */
+	mutex_unlock(&smbox->chan_lock);
 }
 
 static void mailbox_fetch_response(struct scmi_chan_info *cinfo,
@@ -198,7 +226,7 @@ static void mailbox_fetch_response(struct scmi_chan_info *cinfo,
 {
 	struct scmi_mailbox *smbox = cinfo->transport_info;
 
-	shmem_fetch_response(smbox->shmem, xfer);
+	shmem_fetch_response(smbox->shmem, xfer, smbox->io_ops->fromio);
 }
 
 static void mailbox_fetch_notification(struct scmi_chan_info *cinfo,
@@ -206,7 +234,8 @@ static void mailbox_fetch_notification(struct scmi_chan_info *cinfo,
 {
 	struct scmi_mailbox *smbox = cinfo->transport_info;
 
-	shmem_fetch_notification(smbox->shmem, max_len, xfer);
+	shmem_fetch_notification(smbox->shmem, max_len, xfer,
+				 smbox->io_ops->fromio);
 }
 
 static void mailbox_clear_channel(struct scmi_chan_info *cinfo)

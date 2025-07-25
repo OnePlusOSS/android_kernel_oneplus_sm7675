@@ -23,6 +23,7 @@
 #include <linux/init.h>
 #include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/pgsize_migration.h>
 #include <linux/personality.h>
 #include <linux/security.h>
 #include <linux/hugetlb.h>
@@ -948,6 +949,8 @@ static inline int is_mergeable_vma(struct vm_area_struct *vma,
 	if (!is_mergeable_vm_userfaultfd_ctx(vma, vm_userfaultfd_ctx))
 		return 0;
 	if (!anon_vma_name_eq(anon_vma_name(vma), anon_name))
+		return 0;
+	if (!is_mergable_pad_vma(vma, vm_flags))
 		return 0;
 	return 1;
 }
@@ -2246,8 +2249,6 @@ struct vm_area_struct *find_extend_vma_locked(struct mm_struct *mm, unsigned lon
 #else
 int expand_stack_locked(struct vm_area_struct *vma, unsigned long address)
 {
-	if (unlikely(!(vma->vm_flags & VM_GROWSDOWN)))
-		return -EINVAL;
 	return expand_downwards(vma, address);
 }
 
@@ -2480,8 +2481,10 @@ int __split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 		err = vma_adjust(vma, vma->vm_start, addr, vma->vm_pgoff, new);
 
 	/* Success. */
-	if (!err)
+	if (!err) {
+		split_pad_vma(vma, new, addr, new_below);
 		return 0;
+	}
 
 	/* Avoid vm accounting in close() operation */
 	new->vm_start = new->vm_end;
@@ -3356,9 +3359,11 @@ void exit_mmap(struct mm_struct *mm)
 	lru_add_drain();
 	flush_cache_mm(mm);
 	tlb_gather_mmu_fullmm(&tlb, mm);
+	trace_android_vh_swapmem_gather_init(mm);
 	/* update_hiwater_rss(mm) here? but nobody should be looking */
 	/* Use ULONG_MAX here to ensure all VMAs in the mm are unmapped */
 	unmap_vmas(&tlb, &mm->mm_mt, vma, 0, ULONG_MAX, vma->vm_end, ULONG_MAX, false);
+	trace_android_vh_swapmem_gather_finish(mm);
 	mmap_read_unlock(mm);
 
 	/*

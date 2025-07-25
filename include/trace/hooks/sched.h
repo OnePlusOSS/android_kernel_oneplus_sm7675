@@ -466,6 +466,10 @@ DECLARE_HOOK(android_vh_task_ux_op,
 	TP_PROTO(struct task_struct *tsk, int op, void *buf),
 	TP_ARGS(tsk, op, buf));
 
+DECLARE_HOOK(android_vh_set_task_comm,
+	TP_PROTO(struct task_struct *p),
+	TP_ARGS(p));
+
 #endif /* _TRACE_HOOK_SCHED_H */
 /* This part must be outside protection */
 #include <trace/define_trace.h>

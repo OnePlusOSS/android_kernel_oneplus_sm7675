@@ -57,7 +57,9 @@ config CRYPTO_FIPS_VERSION
 config CRYPTO_FIPS140_MOD
 	tristate "Enable FIPS 140 cryptographic module"
 	depends on ARM64 && ARM64_MODULE_PLTS
+	depends on CC_IS_CLANG
 	depends on m
+	select CRYPTO_FIPS140_MERGE_MOD_SECTIONS
 	help
 	  This option enables building a loadable module fips140.ko, which
 	  contains various crypto algorithms that are also built into vmlinux.
@@ -78,6 +80,15 @@ config CRYPTO_FIPS140_MOD_EVAL_TESTING
 	  for lab evaluation testing of the module, e.g. support for injecting
 	  errors and support for a userspace interface to some of the module's
 	  services.  This option should not be enabled in production builds.
+
+config CRYPTO_FIPS140_MERGE_MOD_SECTIONS
+	bool
+	help
+	  This option causes the module linker script to place the delimeters
+	  of the text and rodata sections at the appropriate places so that
+	  the FIPS 140 integrity check can be performed. This option is required
+	  by the Crypto FIPS 140 module, and can be enabled by other FIPS 140
+	  modules using the same logic to perform the self integrity check.
 
 config CRYPTO_FIPS140_MOD_DEBUG_INTEGRITY_CHECK
 	bool "Debug the integrity check in FIPS 140 module"
@@ -1337,10 +1348,11 @@ config CRYPTO_JITTERENTROPY
 
 	  A non-physical non-deterministic ("true") RNG (e.g., an entropy source
 	  compliant with NIST SP800-90B) intended to provide a seed to a
-	  deterministic RNG (e.g.  per NIST SP800-90C).
+	  deterministic RNG (e.g., per NIST SP800-90C).
 	  This RNG does not perform any cryptographic whitening of the generated
+	  random numbers.
 
-	  See https://www.chronox.de/jent.html
+	  See https://www.chronox.de/jent/
 
 config CRYPTO_KDF800108_CTR
 	tristate
