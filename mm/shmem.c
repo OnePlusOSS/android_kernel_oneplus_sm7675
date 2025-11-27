@@ -1029,7 +1029,24 @@ whole_folios:
 				}
 				VM_BUG_ON_FOLIO(folio_test_writeback(folio),
 						folio);
-				truncate_inode_folio(mapping, folio);
+
+				if (!folio_test_large(folio)) {
+					truncate_inode_folio(mapping, folio);
+				} else if (truncate_inode_partial_folio(folio, lstart, lend)) {
+					/*
+					 * If we split a page, reset the loop so
+					 * that we pick up the new sub pages.
+					 * Otherwise the THP was entirely
+					 * dropped or the target range was
+					 * zeroed, so just continue the loop as
+					 * is.
+					 */
+					if (!folio_test_large(folio)) {
+						folio_unlock(folio);
+						index = start;
+						break;
+					}
+				}
 			}
 			index = folio->index + folio_nr_pages(folio) - 1;
 			folio_unlock(folio);
@@ -1074,7 +1091,9 @@ static int shmem_getattr(struct user_namespace *mnt_userns,
 	stat->attributes_mask |= (STATX_ATTR_APPEND |
 			STATX_ATTR_IMMUTABLE |
 			STATX_ATTR_NODUMP);
+	inode_lock_shared(inode);
 	generic_fillattr(&init_user_ns, inode, stat);
+	inode_unlock_shared(inode);
 
 	if (shmem_is_huge(NULL, inode, 0, false))
 		stat->blksize = HPAGE_PMD_SIZE;
@@ -1560,7 +1579,12 @@ static struct folio *shmem_alloc_hugefolio(gfp_t gfp,
 		return NULL;
 
 	shmem_pseudo_vma_init(&pvma, info, hindex);
+
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	folio = vma_alloc_folio(gfp, HPAGE_PMD_ORDER, &pvma, 0, true);
+#else
+	folio = NULL;
+#endif
 	shmem_pseudo_vma_destroy(&pvma);
 	if (!folio)
 		count_vm_event(THP_FILE_FALLBACK);
@@ -1775,6 +1799,7 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
 
 	/* We have to do this with folio locked to prevent races */
 	folio_lock(folio);
+	trace_android_vh_shmem_swapin_folio(folio);
 	if (!folio_test_swapcache(folio) ||
 	    folio_swap_entry(folio).val != swap.val ||
 	    !shmem_confirm_swap(mapping, index, swap)) {
@@ -2369,7 +2394,10 @@ static struct inode *shmem_get_inode(struct super_block *sb, struct inode *dir,
 		INIT_LIST_HEAD(&info->swaplist);
 		simple_xattrs_init(&info->xattrs);
 		cache_no_acl(inode);
+
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 		mapping_set_large_folios(inode->i_mapping);
+#endif
 
 		switch (mode & S_IFMT) {
 		default:
@@ -4145,9 +4173,11 @@ static ssize_t shmem_enabled_store(struct kobject *kobj,
 			huge != SHMEM_HUGE_NEVER && huge != SHMEM_HUGE_DENY)
 		return -EINVAL;
 
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	shmem_huge = huge;
 	if (shmem_huge > SHMEM_HUGE_DENY)
 		SHMEM_SB(shm_mnt->mnt_sb)->huge = shmem_huge;
+#endif
 	return count;
 }
 

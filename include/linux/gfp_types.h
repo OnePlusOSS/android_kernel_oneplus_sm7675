@@ -2,6 +2,8 @@
 #ifndef __LINUX_GFP_TYPES_H
 #define __LINUX_GFP_TYPES_H
 
+#include <linux/bits.h>
+
 /* The typedef is in types.h but we want the documentation here */
 #if 0
 /**
@@ -69,6 +71,13 @@ typedef unsigned int __bitwise gfp_t;
 #else
 #define ___GFP_NOLOCKDEP		0
 #endif
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+#define ___GFP_CHP			0x20000000u
+#else
+#define ___GFP_CHP			0
+#endif
+
 /* If the above are modified, __GFP_BITS_SHIFT may need updating */
 
 /*

@@ -327,9 +327,16 @@ static int __iommu_probe_device(struct device *dev, struct list_head *group_list
 	 * but for now enforcing a simple global ordering is fine.
 	 */
 	lockdep_assert_held(&iommu_probe_device_lock);
+
+	/* Device is probed already if in a group */
+	if (dev->iommu_group) {
+		ret = 0;
+		goto out_unlock;
+	}
+
 	if (!dev_iommu_get(dev)) {
 		ret = -ENOMEM;
-		goto err_out;
+		goto out_unlock;
 	}
 
 	if (!try_module_get(ops->owner)) {
@@ -372,7 +379,7 @@ out_module_put:
 err_free:
 	dev_iommu_free(dev);
 
-err_out:
+out_unlock:
 	return ret;
 }
 
@@ -1629,6 +1636,8 @@ static int iommu_group_alloc_default_domain(struct bus_type *bus,
 {
 	struct iommu_domain *dom;
 
+	if (group->default_domain)
+		return 0;
 	dom = __iommu_domain_alloc(bus, type);
 	if (!dom && type != IOMMU_DOMAIN_DMA) {
 		dom = __iommu_domain_alloc(bus, IOMMU_DOMAIN_DMA);
@@ -1706,15 +1715,7 @@ struct iommu_domain *iommu_group_default_domain(struct iommu_group *group)
 static int probe_iommu_group(struct device *dev, void *data)
 {
 	struct list_head *group_list = data;
-	struct iommu_group *group;
 	int ret;
-
-	/* Device is probed already if in a group */
-	group = iommu_group_get(dev);
-	if (group) {
-		iommu_group_put(group);
-		return 0;
-	}
 
 	mutex_lock(&iommu_probe_device_lock);
 	ret = __iommu_probe_device(dev, group_list);

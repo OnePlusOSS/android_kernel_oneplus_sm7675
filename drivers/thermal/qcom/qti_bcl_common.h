@@ -93,7 +93,12 @@ struct bcl_device {
 	struct mutex			stats_lock;
 	struct bcl_peripheral_data	param[BCL_TYPE_MAX];
 	struct bcl_lvl_stats		stats[MAX_BCL_LVL_COUNT];
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	bool				support_track;
+	int				id;
+#endif
 };
+
 
 void bcl_stats_init(char *bcl_name, struct bcl_device *bcl_perph,
 		     uint32_t stats_len);

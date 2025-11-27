@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
+CFLAGS_fsa4480-i2c.o += -I$(srctree)/drivers/usb/typec/tcpc/inc \
+			-I$(srctree)/drivers/power/oplus/v2/include
+CFLAGS_wcd939x-i2c.o += -I$(srctree)/drivers/power/oplus/v2/include
 CFLAGS_rpmh-rsc.o := -I$(src)
 obj-$(CONFIG_QCOM_AOSS_QMP) +=	qcom_aoss.o
 obj-$(CONFIG_QCOM_GENI_SE) +=	qcom-geni-se.o
@@ -105,7 +108,7 @@ wcd_usbss_i2c-y += wcd-usbss-utils.o
 wcd_usbss_i2c-y += wcd939x-i2c.o
 obj-$(CONFIG_QCOM_ADSP_SLEEPMON) += adsp_sleepmon.o
 obj-$(CONFIG_QCOM_PANEL_EVENT_NOTIFIER) += panel_event_notifier.o
-obj-$(CONFIG_QCOM_DEBUG_SYMBOL) += debug_symbol.o
+obj-$(CONFIG_QCOM_DEBUG_SYMBOL) += debug_symbol.o qbridge.o
 obj-$(CONFIG_QCOM_VM_DMESG_DUMPER) += dmesg_dumper.o
 obj-$(CONFIG_QCOM_VM_ALIVE_LOG_ENCRYPT) += dmesg_dumper_crypto.o
 obj-$(CONFIG_RENAME_DEVICES) += rename_devices.o

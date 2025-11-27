@@ -7,7 +7,6 @@
  * simpler to notice what is, and is not, an upstream change this way over time.
  */
 
-
 /*
  * task_may_not_preempt - check whether a task may not be preemptible soon
  */
@@ -23,5 +22,5 @@ static inline bool uclamp_boosted(struct task_struct *p)
 
 static inline bool uclamp_latency_sensitive(struct task_struct *p)
 {
-	return false;
+ 	return false;
 }

@@ -41,7 +41,7 @@ int ethnl_ops_begin(struct net_device *dev)
 		pm_runtime_get_sync(dev->dev.parent);
 
 	if (!netif_device_present(dev) ||
-	    dev->reg_state == NETREG_UNREGISTERING) {
+	    dev->reg_state >= NETREG_UNREGISTERING) {
 		ret = -ENODEV;
 		goto err;
 	}
@@ -509,7 +509,7 @@ lock_and_cont:
 cont:
 			idx++;
 		}
-
+		ret = 0;
 	}
 	rtnl_unlock();
 

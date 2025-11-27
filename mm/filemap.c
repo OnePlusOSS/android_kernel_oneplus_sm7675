@@ -60,6 +60,12 @@
 
 #include <asm/mman.h>
 
+void _trace_android_rvh_mapping_shrinkable(bool *shrinkable)
+{
+	trace_android_rvh_mapping_shrinkable(shrinkable);
+}
+EXPORT_SYMBOL_GPL(_trace_android_rvh_mapping_shrinkable);
+
 /*
  * Shared mappings implemented 30.11.1994. It's not fully working yet,
  * though.
@@ -855,6 +861,8 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 {
 	XA_STATE(xas, &mapping->i_pages, index);
 	int huge = folio_test_hugetlb(folio);
+	void *alloced_shadow = NULL;
+	int alloced_order = 0;
 	bool charged = false;
 	long nr = 1;
 
@@ -877,13 +885,10 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 	folio->mapping = mapping;
 	folio->index = xas.xa_index;
 
-	do {
-		unsigned int order = xa_get_order(xas.xa, xas.xa_index);
+	for (;;) {
+		int order = -1, split_order = 0;
 		void *entry, *old = NULL;
 
-		if (order > folio_order(folio))
-			xas_split_alloc(&xas, xa_load(xas.xa, xas.xa_index),
-					order, gfp);
 		xas_lock_irq(&xas);
 		xas_for_each_conflict(&xas, entry) {
 			old = entry;
@@ -891,19 +896,33 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 				xas_set_err(&xas, -EEXIST);
 				goto unlock;
 			}
+			/*
+			 * If a larger entry exists,
+			 * it will be the first and only entry iterated.
+			 */
+			if (order == -1)
+				order = xas_get_order(&xas);
+		}
+
+		/* entry may have changed before we re-acquire the lock */
+		if (alloced_order && (old != alloced_shadow || order != alloced_order)) {
+			xas_destroy(&xas);
+			alloced_order = 0;
 		}
 
 		if (old) {
-			if (shadowp)
-				*shadowp = old;
-			/* entry may have been split before we acquired lock */
-			order = xa_get_order(xas.xa, xas.xa_index);
-			if (order > folio_order(folio)) {
+			if (order > 0 && order > folio_order(folio)) {
 				/* How to handle large swap entries? */
 				BUG_ON(shmem_mapping(mapping));
+				if (!alloced_order) {
+					split_order = order;
+					goto unlock;
+				}
 				xas_split(&xas, old, order);
 				xas_reset(&xas);
 			}
+			if (shadowp)
+				*shadowp = old;
 		}
 
 		xas_store(&xas, folio);
@@ -919,12 +938,31 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 				__lruvec_stat_mod_folio(folio,
 						NR_FILE_THPS, nr);
 		}
+
 unlock:
 		xas_unlock_irq(&xas);
-	} while (xas_nomem(&xas, gfp));
+
+		/* split needed, alloc here and retry. */
+		if (split_order) {
+			xas_split_alloc(&xas, old, split_order, gfp);
+			if (xas_error(&xas))
+				goto error;
+			alloced_shadow = old;
+			alloced_order = split_order;
+			xas_reset(&xas);
+			continue;
+		}
+
+		if (!xas_nomem(&xas, gfp))
+			break;
+	}
 
 	if (xas_error(&xas))
 		goto error;
+#ifdef CONFIG_BLOCKIO_UX_OPT
+	if (mapping_protect(mapping))
+		set_fileprotect_page(folio);
+#endif
 
 	trace_mm_filemap_add_to_page_cache(folio);
 	return 0;
@@ -1208,6 +1246,76 @@ enum behavior {
 			 */
 };
 
+#ifdef CONFIG_BLOCKIO_UX_OPT
+extern void dm_bufio_shrink_scan_bypass(unsigned long task, bool *process);
+static inline void __add_wait_queue_entry_sort(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
+{
+	struct list_head *pos;
+	bool is_highpro_process = false;
+
+	dm_bufio_shrink_scan_bypass((unsigned long)current, &is_highpro_process);
+	if (is_highpro_process)
+		goto add_tail;
+
+	list_for_each(pos, &wq_head->head) {
+		struct wait_queue_entry *wait = container_of(pos, struct wait_queue_entry, entry);
+
+		if (IS_ERR_OR_NULL(wait))
+			continue;
+		dm_bufio_shrink_scan_bypass((unsigned long)wait->private, &is_highpro_process);
+		if (is_highpro_process) {
+			list_add(&wq_entry->entry, pos->prev);
+			return;
+		}
+	}
+
+add_tail:
+	list_add_tail(&wq_entry->entry, &wq_head->head);
+}
+
+static int highprio_task_queue(struct wait_queue_head *wq_head)
+{
+	struct list_head *pos;
+
+	list_for_each(pos, &wq_head->head) {
+		struct wait_queue_entry *wait = container_of(pos, struct wait_queue_entry, entry);
+		bool is_highpro_process = false;
+
+		if (IS_ERR_OR_NULL(wait) || IS_ERR_OR_NULL(wait->private))
+			continue;
+
+		dm_bufio_shrink_scan_bypass((unsigned long)wait->private, &is_highpro_process);
+		if (is_highpro_process)
+			return true;
+	}
+
+	return false;
+}
+
+bool should_queue_work_ux(struct bio *bio)
+{
+	struct bio_vec *bvec;
+	unsigned long flags;
+	struct bvec_iter_all iter_all;
+
+	bio_for_each_segment_all(bvec, bio, iter_all) {
+		struct page *page = bvec->bv_page;
+		struct folio *folio = page_folio(page);
+		wait_queue_head_t *q = folio_waitqueue(folio);
+
+		spin_lock_irqsave(&q->lock, flags);
+
+		if (highprio_task_queue(q)) {
+			spin_unlock_irqrestore(&q->lock, flags);
+			return true;
+		}
+
+		spin_unlock_irqrestore(&q->lock, flags);
+	}
+
+	return false;
+}
+#endif
 /*
  * Attempt to check (or get) the folio flag, and mark us done
  * if successful.
@@ -1276,7 +1384,11 @@ repeat:
 	spin_lock_irq(&q->lock);
 	folio_set_waiters(folio);
 	if (!folio_trylock_flag(folio, bit_nr, wait))
+#ifdef CONFIG_BLOCKIO_UX_OPT
+		__add_wait_queue_entry_sort(q, wait);
+#else
 		__add_wait_queue_entry_tail(q, wait);
+#endif
 	spin_unlock_irq(&q->lock);
 
 	/*
@@ -1540,6 +1652,30 @@ void folio_unlock(struct folio *folio)
 		folio_wake_bit(folio, PG_locked);
 }
 EXPORT_SYMBOL(folio_unlock);
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+void unlock_nr_folios(struct folio **folio, int nr)
+{
+	int i;
+
+	BUILD_BUG_ON(PG_waiters != 7);
+
+	for (i = 0; i < nr; i++) {
+		VM_BUG_ON_FOLIO(!folio_test_locked(folio[i]), folio[i]);
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && defined(CONFIG_CONT_PTE_HUGEPAGE_DEBUG_VERBOSE)
+		if (!PageLocked(page[i])) {
+			pr_err("@@@Fixme: unlocking an unlocked page %s page:%lx flags:%lx pfn:%lx\n",
+					__func__, folio[i], folio[i]->flags, folio_pfn(folio[i]));
+			WARN_ON(1);
+		}
+#endif
+		if (clear_bit_unlock_is_negative_byte(PG_locked, folio_flags(folio[i], 0)))
+			folio_wake_bit(folio[i], PG_locked);
+
+	}
+}
+#endif /* CONFIG_CONT_PTE_HUGEPAGE */
 
 /**
  * folio_end_private_2 - Clear PG_private_2 and wake any waiters.
@@ -2728,8 +2864,9 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 	if (unlikely(!iov_iter_count(iter)))
 		return 0;
 
-	iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
+	iov_iter_truncate(iter, inode->i_sb->s_maxbytes - iocb->ki_pos);
 	folio_batch_init(&fbatch);
+	trace_android_vh_filemap_read(filp, iocb->ki_pos, iov_iter_count(iter));
 
 	do {
 		cond_resched();
@@ -2761,6 +2898,15 @@ ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
 		if (unlikely(iocb->ki_pos >= isize))
 			goto put_folios;
 		end_offset = min_t(loff_t, isize, iocb->ki_pos + iter->count);
+
+		/*
+		 * Pairs with a barrier in
+		 * block_write_end()->mark_buffer_dirty() or other page
+		 * dirtying routines like iomap_write_end() to ensure
+		 * changes to page contents are visible before we see
+		 * increased inode size.
+		 */
+		smp_rmb();
 
 		/*
 		 * Once we start copying data, we don't want to be touching any
@@ -3113,6 +3259,9 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	ra->start = max_t(long, 0, vmf->pgoff - ra->ra_pages / 2);
 	ra->size = ra->ra_pages;
 	ra->async_size = ra->ra_pages / 4;
+#ifdef CONFIG_OPLUS_DYNAMIC_READAHEAD
+	adjust_readaround(ra, vmf->pgoff);
+#endif
 	trace_android_vh_tune_mmap_readaround(ra->ra_pages, vmf->pgoff,
 			&ra->start, &ra->size, &ra->async_size);
 	ractl._index = ra->start;
@@ -3423,11 +3572,13 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 	struct page *page;
 	unsigned int mmap_miss = READ_ONCE(file->f_ra.mmap_miss);
 	vm_fault_t ret = 0;
+	pgoff_t first_pgoff = 0;
 
 	rcu_read_lock();
 	folio = first_map_page(mapping, &xas, end_pgoff);
 	if (!folio)
 		goto out;
+	first_pgoff = xas.xa_index;
 
 	if (filemap_map_pmd(vmf, &folio->page)) {
 		ret = VM_FAULT_NOPAGE;
@@ -3483,6 +3634,8 @@ unlock:
 out:
 	rcu_read_unlock();
 	WRITE_ONCE(file->f_ra.mmap_miss, mmap_miss);
+	trace_android_vh_filemap_map_pages(file, first_pgoff, last_pgoff, ret);
+
 	return ret;
 }
 EXPORT_SYMBOL(filemap_map_pages);
@@ -3844,6 +3997,7 @@ again:
 			if (unlikely(status < 0))
 				break;
 		}
+		trace_android_vh_io_statistics(mapping, page->index, 1, false, false);
 		cond_resched();
 
 		if (unlikely(status == 0)) {
@@ -4017,6 +4171,8 @@ bool filemap_release_folio(struct folio *folio, gfp_t gfp)
 	struct address_space * const mapping = folio->mapping;
 
 	BUG_ON(!folio_test_locked(folio));
+	if (!folio_needs_release(folio))
+		return true;
 	if (folio_test_writeback(folio))
 		return false;
 

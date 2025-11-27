@@ -27,6 +27,9 @@ int ddr_stats_get_ss_count(void);
 int ddr_stats_get_ss_vote_info(int ss_count,
 			       struct ddr_stats_ss_vote_info *vote_info);
 
+#ifdef CONFIG_OPLUS_RPMH_QCOM
+void *get_drvdata(void);
+#endif
 int qcom_stats_ddr_freqsync_msg(void);
 int ddr_stats_get_freq_count(void);
 int ddr_stats_get_residency(int freq_count, struct ddr_freq_residency *data);

@@ -729,6 +729,13 @@ static void msm_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 	g = &pctrl->soc->groups[offset];
 
+//#ifdef OPLUS_ARCH_EXTENDS
+//add for case 06617221 fix gpio reset isue
+	val = msm_readl_ctl(pctrl, g);
+	val |= BIT(EGPIO_ENABLE);
+	msm_writel_ctl(val, pctrl, g);
+//#endif /* OPLUS_ARCH_EXTENDS */
+
 	raw_spin_lock_irqsave(&pctrl->lock, flags);
 
 	val = msm_readl_io(pctrl, g);
@@ -2125,6 +2132,32 @@ int msm_qup_read(unsigned int mode)
 }
 EXPORT_SYMBOL(msm_qup_read);
 
+static void msm_gpio_wakeup_init(struct msm_pinctrl *pctrl)
+{
+	struct device_node *gpio_wakeup;
+	uint32_t gpio_num = 0, i = 0;
+	uint32_t * gpio_table;
+	gpio_wakeup = of_find_compatible_node(pctrl->dev->of_node, NULL, "gpio_wakeup");
+	if (!gpio_wakeup) {
+		pr_err("Disable wakeup gpip function not confing\n");
+		return;
+	}
+	gpio_num = of_property_count_elems_of_size(gpio_wakeup, "gpio_table", sizeof(uint32_t));
+	if (gpio_num == -EINVAL){
+		pr_err("Have no wakeup gpio disable\n");
+		return;
+	}
+
+	gpio_table = (uint32_t *)kzalloc(sizeof(uint32_t)*gpio_num, GFP_KERNEL);
+	of_property_read_u32_array(gpio_wakeup, "gpio_table", gpio_table, gpio_num);
+
+	for(i=0; i<gpio_num; i++){
+		msm_gpio_mpm_wake_set(gpio_table[i], false);
+		pr_info("The wakeup function of GPIO_%d has been disabled!",gpio_table[i]);
+	}
+
+}
+
 int msm_spare_write(int spare_reg, u32 val)
 {
 	u32 offset;
@@ -2255,6 +2288,8 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 	if (ret)
 		return ret;
 #endif
+
+	msm_gpio_wakeup_init(pctrl);
 
 	dev_dbg(&pdev->dev, "Probed Qualcomm pinctrl driver\n");
 

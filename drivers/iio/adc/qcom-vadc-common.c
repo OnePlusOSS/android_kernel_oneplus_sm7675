@@ -596,6 +596,178 @@ static const struct vadc_map_pt adcmap_gen3_batt_therm_100k[] = {
 	{ 6060,    980 }
 };
 
+//#ifdef OPLUS_FEATURE_CHG_BASIC
+static const struct vadc_map_pt adcmap_gen3_batt_therm_30k[] =
+{
+	{200752, -400000},
+	{190017, -390000},
+	{179945, -380000},
+	{170491, -370000},
+	{161613, -360000},
+	{153271, -350000},
+	{145430, -340000},
+	{138058, -330000},
+	{131122, -320000},
+	{124594, -310000},
+	{118447, -300000},
+	{112665, -290000},
+	{107216, -280000},
+	{102078, -270000},
+	{97232, -260000},
+	{92659, -250000},
+	{88342, -240000},
+	{84266, -230000},
+	{80416, -220000},
+	{76777, -210000},
+	{73337, -200000},
+	{70091, -190000},
+	{67019, -180000},
+	{64111, -170000},
+	{61358, -160000},
+	{58750, -150000},
+	{56278, -140000},
+	{53935, -130000},
+	{51713, -120000},
+	{49606, -110000},
+	{47606, -100000},
+	{45700, -90000},
+	{43891, -80000},
+	{42173, -70000},
+	{40542, -60000},
+	{38992, -50000},
+	{37520, -40000},
+	{36120, -30000},
+	{34789, -20000},
+	{33523, -10000},
+	{32319, 0},
+	{31176, 10000},
+	{30088, 20000},
+	{29051, 30000},
+	{28063, 40000},
+	{27121, 50000},
+	{26223, 60000},
+	{25367, 70000},
+	{24550, 80000},
+	{23770, 90000},
+	{23026, 100000},
+	{22314, 110000},
+	{21634, 120000},
+	{20986, 130000},
+	{20366, 140000},
+	{19774, 150000},
+	{19208, 160000},
+	{18666, 170000},
+	{18149, 180000},
+	{17654, 190000},
+	{17181, 200000},
+	{16728, 210000},
+	{16295, 220000},
+	{15880, 230000},
+	{15482, 240000},
+	{15100, 250000},
+	{14734, 260000},
+	{14384, 270000},
+	{14047, 280000},
+	{13724, 290000},
+	{13415, 300000},
+	{13118, 310000},
+	{12834, 320000},
+	{12561, 330000},
+	{12299, 340000},
+	{12048, 350000},
+	{11807, 360000},
+	{11575, 370000},
+	{11353, 380000},
+	{11139, 390000},
+	{10934, 400000},
+	{10736, 410000},
+	{10545, 420000},
+	{10362, 430000},
+	{10186, 440000},
+	{10017, 450000},
+	{9854, 460000},
+	{9697, 470000},
+	{9546, 480000},
+	{9401, 490000},
+	{9261, 500000},
+	{9126, 510000},
+	{8996, 520000},
+	{8871, 530000},
+	{8751, 540000},
+	{8635, 550000},
+	{8523, 560000},
+	{8415, 570000},
+	{8311, 580000},
+	{8211, 590000},
+	{8114, 600000},
+	{8022, 610000},
+	{7934, 620000},
+	{7848, 630000},
+	{7766, 640000},
+	{7686, 650000},
+	{7609, 660000},
+	{7535, 670000},
+	{7464, 680000},
+	{7394, 690000},
+	{7328, 700000},
+	{7263, 710000},
+	{7200, 720000},
+	{7140, 730000},
+	{7081, 740000},
+	{7025, 750000},
+	{6970, 760000},
+	{6917, 770000},
+	{6866, 780000},
+	{6816, 790000},
+	{6769, 800000},
+	{6722, 810000},
+	{6678, 820000},
+	{6635, 830000},
+	{6593, 840000},
+	{6552, 850000},
+	{6513, 860000},
+	{6475, 870000},
+	{6438, 880000},
+	{6403, 890000},
+	{6368, 900000},
+	{6334, 910000},
+	{6302, 920000},
+	{6270, 930000},
+	{6239, 940000},
+	{6210, 950000},
+	{6181, 960000},
+	{6153, 970000},
+	{6126, 980000},
+	{6099, 990000},
+	{6074, 1000000},
+	{6049, 1010000},
+	{6025, 1020000},
+	{6002, 1030000},
+	{5980, 1040000},
+	{5958, 1050000},
+	{5937, 1060000},
+	{5916, 1070000},
+	{5896, 1080000},
+	{5877, 1090000},
+	{5858, 1100000},
+	{5840, 1110000},
+	{5822, 1120000},
+	{5805, 1130000},
+	{5788, 1140000},
+	{5772, 1150000},
+	{5756, 1160000},
+	{5740, 1170000},
+	{5725, 1180000},
+	{5711, 1190000},
+	{5696, 1200000},
+	{5683, 1210000},
+	{5669, 1220000},
+	{5656, 1230000},
+	{5644, 1240000},
+	{5631, 1250000},
+};
+//#endif
+
 static const struct u32_fract adc5_prescale_ratios[] = {
 	{ .numerator =  1, .denominator =  1 },
 	{ .numerator =  1, .denominator =  3 },
@@ -702,6 +874,12 @@ static int qcom_vadc7_scale_hw_calib_die_temp(
 				const struct adc5_data *data,
 				u16 adc_code, int *result_mdec);
 
+//#ifdef OPLUS_FEATURE_CHG_BASIC
+static int qcom_adc5_gen3_scale_hw_calib_batt_therm_30(const struct u32_fract *prescale,
+					const struct adc5_data *data,
+					u16 adc_code, int *result_mdec);
+//#endif
+
 static struct qcom_adc5_scale_type scale_adc5_fn[] = {
 	[SCALE_HW_CALIB_DEFAULT] = {qcom_vadc_scale_hw_calib_volt},
 	[SCALE_HW_CALIB_CUR] = {qcom_vadc_scale_hw_calib_current},
@@ -729,6 +907,9 @@ static struct qcom_adc5_scale_type scale_adc5_fn[] = {
 	[SCALE_HW_CALIB_PM5_GEN3_USB_IN_I] = {qcom_adc5_gen3_scale_hw_calib_usb_in_current},
 	[SCALE_HW_CALIB_PM7_SMB_TEMP] = {qcom_vadc_scale_hw_pm7_smb_temp},
 	[SCALE_HW_CALIB_PM7_CHG_TEMP] = {qcom_vadc_scale_hw_pm7_chg_temp},
+//#ifdef OPLUS_FEATURE_CHG_BASIC
+	[SCALE_HW_CALIB_PM5_GEN3_BATT_THERM_30K] = {qcom_adc5_gen3_scale_hw_calib_batt_therm_30},
+//#endif
 };
 
 static int qcom_vadc_map_voltage_temp(const struct vadc_map_pt *pts,
@@ -1128,6 +1309,33 @@ static int qcom_vadc_scale_hw_pm7_chg_temp(
 
 	return 0;
 }
+
+//#ifdef OPLUS_FEATURE_CHG_BASIC
+static int qcom_adc5_gen3_scale_hw_calib_batt_therm_30(
+				const struct u32_fract *prescale,
+				const struct adc5_data *data,
+				u16 adc_code, int *result_mdec)
+{
+	s64 resistance = 0;
+	int ret, result = 0;
+
+	if (adc_code >= RATIO_MAX_ADC7)
+		return -EINVAL;
+
+	/* (ADC code * R_PULLUP (100Kohm)) / (full_scale_code - ADC code)*/
+	resistance = (s64) adc_code * R_PU_30K;
+	resistance = div64_s64(resistance, (RATIO_MAX_ADC7 - adc_code));
+
+	ret = qcom_vadc_map_voltage_temp(adcmap_gen3_batt_therm_30k,
+				ARRAY_SIZE(adcmap_gen3_batt_therm_30k),
+				resistance, &result);
+	if (ret)
+		return ret;
+
+	*result_mdec = result;
+	return 0;
+};
+//#endif
 
 static int qcom_vadc_scale_hw_pm7_smb_temp(
 				const struct u32_fract *prescale,

@@ -1451,6 +1451,11 @@ static const struct adc5_channels adc5_chans_pmic[ADC5_MAX_CHANNEL] = {
 						SCALE_HW_CALIB_THERM_100K_PU_PM7)
 	[ADC5_GEN3_AMUX4_GPIO_100K_PU]	= ADC5_CHAN_TEMP("amux4_gpio_pu2", 0,
 						SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX2_GPIO]		= ADC5_CHAN_VOLT("sensor-pa", 0,
+						SCALE_HW_CALIB_DEFAULT)
+//#ifdef OPLUS_FEATURE_CHG_BASIC
+	[ADC5_GEN3_AMUX1_THM_30K_PU] = ADC5_CHAN_VOLT("amux_thm1_pu1", 0, SCALE_HW_CALIB_DEFAULT)
+//endif
 };
 
 static int adc5_get_dt_channel_data(struct adc5_chip *adc,

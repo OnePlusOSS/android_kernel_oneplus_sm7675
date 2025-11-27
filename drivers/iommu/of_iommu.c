@@ -161,12 +161,11 @@ const struct iommu_ops *of_iommu_configure(struct device *dev,
 		ops    = fwspec->ops;
 	}
 	mutex_unlock(&iommu_probe_device_lock);
-
 	/*
 	 * If we have reason to believe the IOMMU driver missed the initial
 	 * probe for dev, replay it to get things in order.
 	 */
-	if (!err && dev->bus && !device_iommu_mapped(dev))
+	if (!err && dev->bus)
 		err = iommu_probe_device(dev);
 
 	/* Ignore all other errors apart from EPROBE_DEFER */
@@ -198,7 +197,7 @@ iommu_resv_region_get_type(struct device *dev,
 	if (start == phys->start && end == phys->end)
 		return IOMMU_RESV_DIRECT;
 
-	dev_warn(dev, "treating non-direct mapping [%pr] -> [%pap-%pap] as reservation\n", &phys,
+	dev_warn(dev, "treating non-direct mapping [%pr] -> [%pap-%pap] as reservation\n", phys,
 		 &start, &end);
 	return IOMMU_RESV_RESERVED;
 }
@@ -261,7 +260,14 @@ void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
 				phys_addr_t iova;
 				size_t length;
 
+				if (of_dma_is_coherent(dev->of_node))
+					prot |= IOMMU_CACHE;
+
 				maps = of_translate_dma_region(np, maps, &iova, &length);
+				if (length == 0) {
+					dev_warn(dev, "Cannot reserve IOVA region of 0 size\n");
+					continue;
+				}
 				type = iommu_resv_region_get_type(dev, &phys, iova, length);
 
 				region = iommu_alloc_resv_region(iova, length, prot, type,

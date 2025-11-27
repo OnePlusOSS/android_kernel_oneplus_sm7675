@@ -13,6 +13,9 @@
 #include <linux/regulator/consumer.h>
 #include <linux/usb/dwc3-msm.h>
 #include <linux/usb/repeater.h>
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#include <linux/proc_fs.h>
+#endif
 
 #define EUSB2_3P0_VOL_MIN			3075000 /* uV */
 #define EUSB2_3P0_VOL_MAX			3300000 /* uV */
@@ -118,7 +121,17 @@ struct eusb2_repeater {
 	u32			*host_param_override_seq;
 	u8			param_override_seq_cnt;
 	u8			host_param_override_seq_cnt;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	u32			*param_override_seq_host;
+	u8			param_override_seq_cnt_host;
+#endif
 };
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+#define REPEATER_PARA_COUNT_MAX 24
+static u32 repeater_parameters_seq[REPEATER_PARA_COUNT_MAX] = {0};
+static u8 repeater_parameters_cnt = 0;
+#endif
 
 /* Perform one or more register read */
 static int eusb2_repeater_reg_read(struct eusb2_repeater *er,
@@ -176,8 +189,13 @@ static void eusb2_repeater_update_seq(struct eusb2_repeater *er,
 
 	dev_dbg(er->ur.dev, "param override seq count:%d\n", cnt);
 	for (i = 0; i < cnt; i = i+2) {
+#ifdef OPLUS_FEATURE_CHG_BASIC
+		dev_err(er->ur.dev, "write 0x%02x to 0x%02x\n",
+						seq[i], seq[i+1]);
+#else
 		dev_dbg(er->ur.dev, "write 0x%02x to 0x%02x\n",
 						seq[i], seq[i+1]);
+#endif
 		eusb2_repeater_reg_write(er, seq[i+1], seq[i]);
 	}
 }
@@ -335,6 +353,21 @@ static int eusb2_repeater_init(struct usb_repeater *ur)
 			container_of(ur, struct eusb2_repeater, ur);
 	unsigned int rptr_init_cnt = INIT_MAX_CNT;
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if ((ur->flags & PHY_HOST_MODE) && er->param_override_seq_host) {
+		eusb2_repeater_update_seq(er, er->param_override_seq_host,
+				er->param_override_seq_cnt_host);
+		dev_err(er->ur.dev, "Using host eye-diagram parameters!\n");
+	} else if (repeater_parameters_cnt > 0) {
+		dev_err(er->ur.dev, "use oplus repeater parameters");
+		eusb2_repeater_update_seq(er, repeater_parameters_seq,
+				repeater_parameters_cnt);
+	} else {
+		eusb2_repeater_update_seq(er, er->param_override_seq,
+				er->param_override_seq_cnt);
+		dev_err(er->ur.dev, "Using device eye-diagram parameters!\n");
+	}
+#else
 	/* override init sequence using devicetree based values */
 	eusb2_repeater_update_seq(er, er->param_override_seq,
 			er->param_override_seq_cnt);
@@ -342,6 +375,7 @@ static int eusb2_repeater_init(struct usb_repeater *ur)
 	if (ur->flags & PHY_HOST_MODE)
 		eusb2_repeater_update_seq(er, er->host_param_override_seq,
 				er->host_param_override_seq_cnt);
+#endif
 
 	/* override tune params using debugfs based values */
 	if (er->usb2_crossover <= 0x7)
@@ -483,6 +517,150 @@ static int eusb2_repeater_read_overrides(struct device *dev, const char *prop,
 	return 0;
 }
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+static ssize_t proc_repeater_parameters_read(struct file *filp, char __user *buf,
+				     size_t count, loff_t *ppos)
+{
+	struct eusb2_repeater *er = pde_data(file_inode(filp));
+	uint8_t ret;
+	int i;
+	char page[128];
+	int index = 0;
+
+	if (!er) {
+		pr_err("eusb2_repeater er is null\n");
+		return -EFAULT;
+	}
+
+	if (repeater_parameters_cnt > 0) {
+		for (i = 0; i < repeater_parameters_cnt; i += 2) {
+			index += sprintf(page + index, "0x%02x,0x%02x,",
+					repeater_parameters_seq[i], repeater_parameters_seq[i + 1]);
+		}
+		if (page[index - 1] == ',')
+			page[index - 1] = '\0';
+	} else {
+		sprintf(page, "%s", "default");
+	}
+
+	ret = simple_read_from_buffer(buf, count, ppos, page, strlen(page));
+	return ret;
+}
+
+static ssize_t proc_repeater_parameters_write(struct file *filp, const char __user *buf,
+				      size_t count, loff_t *lo)
+{
+	struct eusb2_repeater *er = pde_data(file_inode(filp));
+	char buffer[128] = {0};
+	u32 seq[REPEATER_PARA_COUNT_MAX] = {0};
+	char *str = buffer;
+	int val;
+	int cnt = 0;
+	int i, j;
+
+	if (!er) {
+		pr_err("eusb2_repeater er is null\n");
+		return -EFAULT;
+	}
+
+	if (count > sizeof(buffer) - 1) {
+		dev_err(er->ur.dev, "data length out of range, count=%zu\n", count);
+		return -EFAULT;
+	}
+
+	if (copy_from_user(buffer, buf, count)) {
+		dev_err(er->ur.dev, "copy from user error\n");
+		return -EFAULT;
+	}
+
+	if (strncmp(buffer, "reset", strlen("reset")) == 0) {
+		dev_err(er->ur.dev, "parameters reset\n");
+		memset(repeater_parameters_seq, 0, sizeof(repeater_parameters_seq));
+		repeater_parameters_cnt = 0;
+		return count;
+	}
+
+	while (*str != '\0' && *str != '\n') {
+		if (sscanf(str, "%x", &val)) {
+			seq[cnt++] = val;
+			str = strstr(str, ",");
+			if (!str)
+				break;
+			else
+				str++;
+			if (cnt == REPEATER_PARA_COUNT_MAX)
+				break;
+		} else {
+			dev_err(er->ur.dev, "invalid data, buffer=%s\n", buffer);
+			return -EFAULT;
+		}
+	}
+
+	if (cnt % 2) {
+		dev_err(er->ur.dev, "invalid data count, parameters reset, buffer=%s\n", buffer);
+		memset(repeater_parameters_seq, 0, sizeof(repeater_parameters_seq));
+		repeater_parameters_cnt = 0;
+		return -EFAULT;
+	} else {
+		/* all addr param must be configed in devicetree */
+		for (i = 1; i < cnt; i += 2) {
+			for (j = 1; j < er->param_override_seq_cnt; j += 2) {
+				if (seq[i] == er->param_override_seq[j])
+					break;
+			}
+			if (j > er->param_override_seq_cnt) {
+				dev_err(er->ur.dev, "param 0x%x is not configed in devicetree, buffer=%s\n", seq[i], buffer);
+				return -EFAULT;
+			}
+		}
+
+		/* all val param must be lower than 0xff */
+		for (i = 0; i < cnt; i += 2) {
+			if ((seq[i] >> 8) != 0) {
+				dev_err(er->ur.dev, "param 0x%x is invalid, buffer=%s\n", seq[i], buffer);
+				return -EFAULT;
+			}
+		}
+
+		dev_err(er->ur.dev, "parameters update count = %d\n", cnt);
+		for (i = 0; i < cnt; i += 2)
+			dev_err(er->ur.dev, "seq[%d]:0x%02x,0x%02x\n", i, seq[i], seq[i + 1]);
+		memcpy(repeater_parameters_seq, seq, sizeof(seq));
+		repeater_parameters_cnt = cnt;
+	}
+
+	return count;
+}
+
+static const struct proc_ops proc_repeater_parameters_ops = {
+	.proc_write = proc_repeater_parameters_write,
+	.proc_read = proc_repeater_parameters_read,
+};
+
+static int init_repeater_parameters_proc(struct eusb2_repeater *er)
+{
+	int ret = 0;
+	struct proc_dir_entry *prEntry_da = NULL;
+	struct proc_dir_entry *prEntry_tmp = NULL;
+
+	prEntry_da = proc_mkdir("usb", NULL);
+	if (prEntry_da == NULL) {
+		pr_err("Couldn't create usb proc entry\n");
+		return -ENOMEM;
+	}
+
+	prEntry_tmp = proc_create_data("repeater_parameters", 0664, prEntry_da,
+				       &proc_repeater_parameters_ops, er);
+	if (prEntry_tmp == NULL) {
+		proc_remove(prEntry_da);
+		ret = -ENOMEM;
+		pr_err("Couldn't create repeater_parameters entry\n");
+	}
+
+	return ret;
+}
+#endif
+
 static int eusb2_repeater_probe(struct platform_device *pdev)
 {
 	struct eusb2_repeater *er;
@@ -533,6 +711,13 @@ static int eusb2_repeater_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_probe;
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	ret = eusb2_repeater_read_overrides(dev, "qcom,param-override-seq-host",
+			&er->param_override_seq_host, &er->param_override_seq_cnt_host);
+	if (ret < 0)
+		goto err_probe;
+#endif
+
 	er->ur.dev = dev;
 	platform_set_drvdata(pdev, er);
 
@@ -545,6 +730,10 @@ static int eusb2_repeater_probe(struct platform_device *pdev)
 	ret = usb_add_repeater_dev(&er->ur);
 	if (ret)
 		goto err_probe;
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	init_repeater_parameters_proc(er);
+#endif
 
 	eusb2_repeater_create_debugfs(er);
 	return 0;
@@ -559,6 +748,10 @@ static int eusb2_repeater_remove(struct platform_device *pdev)
 
 	if (!er)
 		return 0;
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	remove_proc_entry("usb", NULL);
+#endif
 
 	debugfs_remove_recursive(er->root);
 	usb_remove_repeater_dev(&er->ur);

@@ -186,7 +186,7 @@ static inline
 u32 ufs_qcom_phy_qmp_v4_get_tx_hs_equalizer(struct ufs_qcom_phy *phy, u32 gear)
 {
 	if (gear == 5)
-		return DEEMPHASIS_3_5_dB;
+		return NO_DEEMPHASIS;
 	/* Gear 1-4 setting */
 	return NO_DEEMPHASIS;
 }

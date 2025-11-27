@@ -13,6 +13,8 @@
 
 #include <trace/hooks/dtask.h>
 
+extern void android_vh_pcpu_rwsem_handler(u64 sem, struct task_struct *tsk, unsigned long jiffies);
+extern void pcp_wait_handler(struct percpu_rw_semaphore *sem, bool is_reader, int phase);
 /*
  * trace_android_vh_record_pcpu_rwsem_starttime  is called in
  * include/linux/percpu-rwsem.h by including include/hooks/dtask.h, which
@@ -185,6 +187,7 @@ static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader)
 	}
 	spin_unlock_irq(&sem->waiters.lock);
 
+	pcp_wait_handler(sem, reader, 1);
 	while (wait) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		if (!smp_load_acquire(&wq_entry.private))
@@ -196,7 +199,13 @@ static void percpu_rwsem_wait(struct percpu_rw_semaphore *sem, bool reader)
 
 bool __sched __percpu_down_read(struct percpu_rw_semaphore *sem, bool try)
 {
+	bool ret = false;
+
 	if (__percpu_down_read_trylock(sem))
+		return true;
+
+	trace_android_vh_percpu_rwsem_down_read(sem, try, &ret);
+	if (ret)
 		return true;
 
 	if (try)
@@ -253,6 +262,8 @@ static bool readers_active_check(struct percpu_rw_semaphore *sem)
 
 void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
 {
+	bool complete = false;
+
 	might_sleep();
 	rwsem_acquire(&sem->dep_map, 0, 0, _RET_IP_);
 	trace_contention_begin(sem, LCB_F_PERCPU | LCB_F_WRITE);
@@ -260,6 +271,7 @@ void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
 	trace_android_vh_record_pcpu_rwsem_time_early(jiffies, sem);
 
 	/* Notify readers to take the slow path. */
+	pcp_wait_handler(sem, 1, 0);
 	rcu_sync_enter(&sem->rss);
 
 	/*
@@ -278,15 +290,22 @@ void __sched percpu_down_write(struct percpu_rw_semaphore *sem)
 	 */
 
 	/* Wait for all active readers to complete. */
-	rcuwait_wait_event(&sem->writer, readers_active_check(sem), TASK_UNINTERRUPTIBLE);
+	pcp_wait_handler(sem, 1, 3);
+	trace_android_rvh_percpu_rwsem_wait_complete(sem, TASK_UNINTERRUPTIBLE, &complete);
+	if (!complete)
+		rcuwait_wait_event(&sem->writer, readers_active_check(sem), TASK_UNINTERRUPTIBLE);
 	trace_contention_end(sem, 0);
 	trace_android_vh_record_pcpu_rwsem_starttime(current, jiffies);
+	android_vh_pcpu_rwsem_handler((u64)sem, current, jiffies);
 }
 EXPORT_SYMBOL_GPL(percpu_down_write);
 
 void percpu_up_write(struct percpu_rw_semaphore *sem)
 {
+	android_vh_pcpu_rwsem_handler((u64)sem, current, 0);
 	rwsem_release(&sem->dep_map, _RET_IP_);
+
+	trace_android_vh_percpu_rwsem_up_write(sem);
 
 	/*
 	 * Signal the writer is done, no fast path yet.

@@ -37,6 +37,7 @@
 #include <linux/page_owner.h>
 #include <linux/sched/sysctl.h>
 #include <linux/memory-tiers.h>
+#include <linux/compat.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
@@ -55,12 +56,18 @@
  * for all hugepage allocations.
  */
 unsigned long transparent_hugepage_flags __read_mostly =
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
+	/* XXX:
+	 * cont_pte is thp-like and api compatible with thp, but it doesn't
+	 * require collapse and doesn't co-work with collapse either
+	 */
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
 	(1<<TRANSPARENT_HUGEPAGE_FLAG)|
 #endif
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
 	(1<<TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG)|
 #endif
+#endif /* !CONFIG_CONT_PTE_HUGEPAGE */
 	(1<<TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG)|
 	(1<<TRANSPARENT_HUGEPAGE_DEFRAG_KHUGEPAGED_FLAG)|
 	(1<<TRANSPARENT_HUGEPAGE_USE_ZERO_PAGE_FLAG);
@@ -121,11 +128,13 @@ bool hugepage_vma_check(struct vm_area_struct *vma, unsigned long vm_flags,
 	if (!in_pf && shmem_file(vma->vm_file))
 		return shmem_huge_enabled(vma, !enforce_sysfs);
 
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	/* Enforce sysfs THP requirements as necessary */
 	if (enforce_sysfs &&
 	    (!hugepage_flags_enabled() || (!(vm_flags & VM_HUGEPAGE) &&
 					   !hugepage_flags_always())))
 		return false;
+#endif
 
 	/* Only regular file is valid */
 	if (!in_pf && file_thp_enabled(vma))
@@ -158,7 +167,11 @@ retry:
 		return true;
 
 	zero_page = alloc_pages((GFP_TRANSHUGE | __GFP_ZERO) & ~__GFP_MOVABLE,
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 			HPAGE_PMD_ORDER);
+#else
+			HPAGE_CONT_PTE_ORDER);
+#endif
 	if (!zero_page) {
 		count_vm_event(THP_ZERO_PAGE_ALLOC_FAILED);
 		return false;
@@ -207,6 +220,7 @@ void mm_put_huge_zero_page(struct mm_struct *mm)
 		put_huge_zero_page();
 }
 
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 static unsigned long shrink_huge_zero_page_count(struct shrinker *shrink,
 					struct shrink_control *sc)
 {
@@ -233,6 +247,7 @@ static struct shrinker huge_zero_page_shrinker = {
 	.scan_objects = shrink_huge_zero_page_scan,
 	.seeks = DEFAULT_SEEKS,
 };
+#endif
 
 #ifdef CONFIG_SYSFS
 static ssize_t enabled_show(struct kobject *kobj,
@@ -257,6 +272,8 @@ static ssize_t enabled_store(struct kobject *kobj,
 {
 	ssize_t ret = count;
 
+	/* Read XXX */
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	if (sysfs_streq(buf, "always")) {
 		clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
 		set_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
@@ -274,6 +291,7 @@ static ssize_t enabled_store(struct kobject *kobj,
 		if (err)
 			ret = err;
 	}
+#endif
 	return ret;
 }
 
@@ -485,12 +503,14 @@ static int __init hugepage_init(void)
 	if (err)
 		goto err_slab;
 
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	err = register_shrinker(&huge_zero_page_shrinker, "thp-zero");
 	if (err)
 		goto err_hzp_shrinker;
 	err = register_shrinker(&deferred_split_shrinker, "thp-deferred_split");
 	if (err)
 		goto err_split_shrinker;
+#endif
 
 	/*
 	 * By default disable transparent hugepages on smaller systems,
@@ -508,10 +528,12 @@ static int __init hugepage_init(void)
 
 	return 0;
 err_khugepaged:
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	unregister_shrinker(&deferred_split_shrinker);
 err_split_shrinker:
 	unregister_shrinker(&huge_zero_page_shrinker);
 err_hzp_shrinker:
+#endif
 	khugepaged_destroy();
 err_slab:
 	hugepage_exit_sysfs(hugepage_kobj);
@@ -525,6 +547,8 @@ static int __init setup_transparent_hugepage(char *str)
 	int ret = 0;
 	if (!str)
 		goto out;
+	/* Read XXX */
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	if (!strcmp(str, "always")) {
 		set_bit(TRANSPARENT_HUGEPAGE_FLAG,
 			&transparent_hugepage_flags);
@@ -544,6 +568,7 @@ static int __init setup_transparent_hugepage(char *str)
 			  &transparent_hugepage_flags);
 		ret = 1;
 	}
+#endif
 out:
 	if (!ret)
 		pr_warn("transparent_hugepage= cannot parse, ignored\n");
@@ -584,8 +609,9 @@ void prep_transhuge_page(struct page *page)
 	 * we use page->mapping and page->index in second tail page
 	 * as list_head: assuming THP order >= 2
 	 */
-
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	INIT_LIST_HEAD(page_deferred_list(page));
+#endif
 	set_compound_page_dtor(page, TRANSHUGE_PAGE_DTOR);
 }
 
@@ -606,6 +632,9 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 	loff_t off_end = off + len;
 	loff_t off_align = round_up(off, size);
 	unsigned long len_pad, ret;
+
+	if (!IS_ENABLED(CONFIG_64BIT) || in_compat_syscall())
+		return 0;
 
 	if (off_end <= off_align || (off_end - off_align) < size)
 		return 0;
@@ -829,7 +858,11 @@ vm_fault_t do_huge_pmd_anonymous_page(struct vm_fault *vmf)
 		return ret;
 	}
 	gfp = vma_thp_gfp_mask(vma);
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	folio = vma_alloc_folio(gfp, HPAGE_PMD_ORDER, vma, haddr, true);
+#else
+	folio = NULL;
+#endif
 	if (unlikely(!folio)) {
 		count_vm_event(THP_FAULT_FALLBACK);
 		return VM_FAULT_FALLBACK;
@@ -1488,7 +1521,7 @@ vm_fault_t do_huge_pmd_numa_page(struct vm_fault *vmf)
 	vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
 	if (unlikely(!pmd_same(oldpmd, *vmf->pmd))) {
 		spin_unlock(vmf->ptl);
-		goto out;
+		return 0;
 	}
 
 	pmd = pmd_modify(oldpmd, vma->vm_page_prot);
@@ -1521,23 +1554,16 @@ vm_fault_t do_huge_pmd_numa_page(struct vm_fault *vmf)
 	if (migrated) {
 		flags |= TNF_MIGRATED;
 		page_nid = target_nid;
-	} else {
-		flags |= TNF_MIGRATE_FAIL;
-		vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
-		if (unlikely(!pmd_same(oldpmd, *vmf->pmd))) {
-			spin_unlock(vmf->ptl);
-			goto out;
-		}
-		goto out_map;
+		task_numa_fault(last_cpupid, page_nid, HPAGE_PMD_NR, flags);
+		return 0;
 	}
 
-out:
-	if (page_nid != NUMA_NO_NODE)
-		task_numa_fault(last_cpupid, page_nid, HPAGE_PMD_NR,
-				flags);
-
-	return 0;
-
+	flags |= TNF_MIGRATE_FAIL;
+	vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
+	if (unlikely(!pmd_same(oldpmd, *vmf->pmd))) {
+		spin_unlock(vmf->ptl);
+		return 0;
+	}
 out_map:
 	/* Restore the PMD */
 	pmd = pmd_modify(oldpmd, vma->vm_page_prot);
@@ -1547,7 +1573,10 @@ out_map:
 	set_pmd_at(vma->vm_mm, haddr, vmf->pmd, pmd);
 	update_mmu_cache_pmd(vma, vmf->address, vmf->pmd);
 	spin_unlock(vmf->ptl);
-	goto out;
+
+	if (page_nid != NUMA_NO_NODE)
+		task_numa_fault(last_cpupid, page_nid, HPAGE_PMD_NR, flags);
+	return 0;
 }
 
 /*
@@ -1913,6 +1942,146 @@ unlock:
 	return ret;
 }
 
+#ifdef CONFIG_USERFAULTFD
+/*
+ * The PT lock for src_pmd and dst_vma/src_vma (for reading) are locked by
+ * the caller, but it must return after releasing the page_table_lock.
+ * Just move the page from src_pmd to dst_pmd if possible.
+ * Return zero if succeeded in moving the page, -EAGAIN if it needs to be
+ * repeated by the caller, or other errors in case of failure.
+ */
+int move_pages_huge_pmd(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd, pmd_t dst_pmdval,
+			struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+			unsigned long dst_addr, unsigned long src_addr)
+{
+	pmd_t _dst_pmd, src_pmdval;
+	struct page *src_page;
+	struct folio *src_folio;
+	struct anon_vma *src_anon_vma;
+	spinlock_t *src_ptl, *dst_ptl;
+	pgtable_t src_pgtable;
+	struct mmu_notifier_range range;
+	int err = 0;
+
+	src_pmdval = *src_pmd;
+	src_ptl = pmd_lockptr(mm, src_pmd);
+
+	lockdep_assert_held(src_ptl);
+	vma_assert_locked(src_vma);
+	vma_assert_locked(dst_vma);
+
+	/* Sanity checks before the operation */
+	if (WARN_ON_ONCE(!pmd_none(dst_pmdval)) || WARN_ON_ONCE(src_addr & ~HPAGE_PMD_MASK) ||
+	    WARN_ON_ONCE(dst_addr & ~HPAGE_PMD_MASK)) {
+		spin_unlock(src_ptl);
+		return -EINVAL;
+	}
+
+	if (!pmd_trans_huge(src_pmdval)) {
+		spin_unlock(src_ptl);
+		if (is_pmd_migration_entry(src_pmdval)) {
+			pmd_migration_entry_wait(mm, &src_pmdval);
+			return -EAGAIN;
+		}
+		return -ENOENT;
+	}
+
+	src_page = pmd_page(src_pmdval);
+
+	if (!is_huge_zero_pmd(src_pmdval)) {
+		if (unlikely(!PageAnonExclusive(src_page))) {
+			spin_unlock(src_ptl);
+			return -EBUSY;
+		}
+
+		src_folio = page_folio(src_page);
+		folio_get(src_folio);
+	} else
+		src_folio = NULL;
+
+	spin_unlock(src_ptl);
+
+	flush_cache_range(src_vma, src_addr, src_addr + HPAGE_PMD_SIZE);
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, src_vma, mm, src_addr,
+				src_addr + HPAGE_PMD_SIZE);
+	mmu_notifier_invalidate_range_start(&range);
+
+	if (src_folio) {
+		folio_lock(src_folio);
+
+		/*
+		 * split_huge_page walks the anon_vma chain without the page
+		 * lock. Serialize against it with the anon_vma lock, the page
+		 * lock is not enough.
+		 */
+		src_anon_vma = folio_get_anon_vma(src_folio);
+		if (!src_anon_vma) {
+			err = -EAGAIN;
+			goto unlock_folio;
+		}
+		anon_vma_lock_write(src_anon_vma);
+	} else
+		src_anon_vma = NULL;
+
+	dst_ptl = pmd_lockptr(mm, dst_pmd);
+	double_pt_lock(src_ptl, dst_ptl);
+	if (unlikely(!pmd_same(*src_pmd, src_pmdval) ||
+		     !pmd_same(*dst_pmd, dst_pmdval))) {
+		err = -EAGAIN;
+		goto unlock_ptls;
+	}
+	if (src_folio) {
+		if (folio_maybe_dma_pinned(src_folio) ||
+		    !PageAnonExclusive(&src_folio->page)) {
+			err = -EBUSY;
+			goto unlock_ptls;
+		}
+
+		if (WARN_ON_ONCE(!folio_test_head(src_folio)) ||
+		    WARN_ON_ONCE(!folio_test_anon(src_folio))) {
+			err = -EBUSY;
+			goto unlock_ptls;
+		}
+
+		src_pmdval = pmdp_huge_clear_flush(src_vma, src_addr, src_pmd);
+		/* Folio got pinned from under us. Put it back and fail the move. */
+		if (folio_maybe_dma_pinned(src_folio)) {
+			set_pmd_at(mm, src_addr, src_pmd, src_pmdval);
+			err = -EBUSY;
+			goto unlock_ptls;
+		}
+
+		page_move_anon_rmap(&src_folio->page, dst_vma);
+		WRITE_ONCE(src_folio->index, linear_page_index(dst_vma, dst_addr));
+
+		_dst_pmd = mk_huge_pmd(&src_folio->page, dst_vma->vm_page_prot);
+		/* Follow mremap() behavior and treat the entry dirty after the move */
+		_dst_pmd = pmd_mkwrite(pmd_mkdirty(_dst_pmd));
+	} else {
+		src_pmdval = pmdp_huge_clear_flush(src_vma, src_addr, src_pmd);
+		_dst_pmd = mk_huge_pmd(src_page, dst_vma->vm_page_prot);
+	}
+	set_pmd_at(mm, dst_addr, dst_pmd, _dst_pmd);
+
+	src_pgtable = pgtable_trans_huge_withdraw(mm, src_pmd);
+	pgtable_trans_huge_deposit(mm, dst_pmd, src_pgtable);
+unlock_ptls:
+	double_pt_unlock(src_ptl, dst_ptl);
+	if (src_anon_vma) {
+		anon_vma_unlock_write(src_anon_vma);
+		put_anon_vma(src_anon_vma);
+	}
+unlock_folio:
+	/* unblock rmap walks */
+	if (src_folio)
+		folio_unlock(src_folio);
+	mmu_notifier_invalidate_range_end(&range);
+	if (src_folio)
+		folio_put(src_folio);
+	return err;
+}
+#endif /* CONFIG_USERFAULTFD */
+
 /*
  * Returns page table lock pointer if a given pmd maps a thp, NULL otherwise.
  *
@@ -1929,6 +2098,7 @@ spinlock_t *__pmd_trans_huge_lock(pmd_t *pmd, struct vm_area_struct *vma)
 	spin_unlock(ptl);
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(__pmd_trans_huge_lock);
 
 /*
  * Returns page table lock pointer if a given pud maps a thp, NULL otherwise.
@@ -2104,32 +2274,11 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		return __split_huge_zero_page_pmd(vma, haddr, pmd);
 	}
 
-	/*
-	 * Up to this point the pmd is present and huge and userland has the
-	 * whole access to the hugepage during the split (which happens in
-	 * place). If we overwrite the pmd with the not-huge version pointing
-	 * to the pte here (which of course we could if all CPUs were bug
-	 * free), userland could trigger a small page size TLB miss on the
-	 * small sized TLB while the hugepage TLB entry is still established in
-	 * the huge TLB. Some CPU doesn't like that.
-	 * See http://support.amd.com/TechDocs/41322_10h_Rev_Gd.pdf, Erratum
-	 * 383 on page 105. Intel should be safe but is also warns that it's
-	 * only safe if the permission and cache attributes of the two entries
-	 * loaded in the two TLB is identical (which should be the case here).
-	 * But it is generally safer to never allow small and huge TLB entries
-	 * for the same virtual address to be loaded simultaneously. So instead
-	 * of doing "pmd_populate(); flush_pmd_tlb_range();" we first mark the
-	 * current pmd notpresent (atomically because here the pmd_trans_huge
-	 * must remain set at all times on the pmd until the split is complete
-	 * for this pmd), then we flush the SMP TLB and finally we write the
-	 * non-huge version of the pmd entry with pmd_populate.
-	 */
-	old_pmd = pmdp_invalidate(vma, haddr, pmd);
-
-	pmd_migration = is_pmd_migration_entry(old_pmd);
+	pmd_migration = is_pmd_migration_entry(*pmd);
 	if (unlikely(pmd_migration)) {
 		swp_entry_t entry;
 
+		old_pmd = *pmd;
 		entry = pmd_to_swp_entry(old_pmd);
 		page = pfn_swap_entry_to_page(entry);
 		write = is_writable_migration_entry(entry);
@@ -2140,6 +2289,30 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 		soft_dirty = pmd_swp_soft_dirty(old_pmd);
 		uffd_wp = pmd_swp_uffd_wp(old_pmd);
 	} else {
+		/*
+		 * Up to this point the pmd is present and huge and userland has
+		 * the whole access to the hugepage during the split (which
+		 * happens in place). If we overwrite the pmd with the not-huge
+		 * version pointing to the pte here (which of course we could if
+		 * all CPUs were bug free), userland could trigger a small page
+		 * size TLB miss on the small sized TLB while the hugepage TLB
+		 * entry is still established in the huge TLB. Some CPU doesn't
+		 * like that. See
+		 * http://support.amd.com/TechDocs/41322_10h_Rev_Gd.pdf, Erratum
+		 * 383 on page 105. Intel should be safe but is also warns that
+		 * it's only safe if the permission and cache attributes of the
+		 * two entries loaded in the two TLB is identical (which should
+		 * be the case here). But it is generally safer to never allow
+		 * small and huge TLB entries for the same virtual address to be
+		 * loaded simultaneously. So instead of doing "pmd_populate();
+		 * flush_pmd_tlb_range();" we first mark the current pmd
+		 * notpresent (atomically because here the pmd_trans_huge must
+		 * remain set at all times on the pmd until the split is
+		 * complete for this pmd), then we flush the SMP TLB and finally
+		 * we write the non-huge version of the pmd entry with
+		 * pmd_populate.
+		 */
+		old_pmd = pmdp_invalidate(vma, haddr, pmd);
 		page = pmd_page(old_pmd);
 		if (pmd_dirty(old_pmd)) {
 			dirty = true;
@@ -2367,6 +2540,45 @@ void vma_adjust_trans_huge(struct vm_area_struct *vma,
 		split_huge_pmd_if_needed(next, nstart);
 	}
 }
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+
+static inline void split_huge_cont_pte_if_needed(struct vm_area_struct *vma, unsigned long address)
+{
+	/*
+	 * If the new address isn't hpage aligned and it could previously
+	 * contain an hugepage: check if we need to split an huge pmd.
+	 */
+	if (!IS_ALIGNED(address, HPAGE_CONT_PTE_SIZE) &&
+	    range_in_vma(vma, ALIGN_DOWN(address, HPAGE_CONT_PTE_SIZE),
+			 ALIGN(address, HPAGE_CONT_PTE_SIZE)))
+		split_huge_cont_pte_address(vma, address, false, NULL);
+}
+
+void vma_adjust_cont_pte_trans_huge(struct vm_area_struct *vma,
+                                    unsigned long start,
+                                    unsigned long end,
+                                    long adjust_next)
+{
+	/* Check if we need to split start first. */
+	split_huge_cont_pte_if_needed(vma, start);
+
+	/* Check if we need to split end next. */
+	split_huge_cont_pte_if_needed(vma, end);
+
+	/*
+	 * If we're also updating the next vma vm_start,
+	 * check if we need to split it.
+	 */
+	if (adjust_next > 0) {
+		struct vm_area_struct *next = find_vma(vma->vm_mm, vma->vm_end);
+		unsigned long nstart = next->vm_start;
+		nstart += adjust_next;
+		split_huge_cont_pte_if_needed(next, nstart);
+	}
+
+}
+#endif
 
 static void unmap_folio(struct folio *folio)
 {
@@ -2662,6 +2874,10 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 
 	if (folio_test_writeback(folio))
 		return -EBUSY;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	dump_page(folio_page(folio, 0), "split hugepage");
+	CHP_BUG_ON(1);
+#endif
 
 	if (folio_test_anon(folio)) {
 		/*
@@ -2694,8 +2910,7 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 		gfp = current_gfp_context(mapping_gfp_mask(mapping) &
 							GFP_RECLAIM_MASK);
 
-		if (folio_test_private(folio) &&
-				!filemap_release_folio(folio, gfp)) {
+		if (!filemap_release_folio(folio, gfp)) {
 			ret = -EBUSY;
 			goto out;
 		}
@@ -2726,7 +2941,7 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 	 * split PMDs
 	 */
 	if (!can_split_folio(folio, &extra_pins)) {
-		ret = -EBUSY;
+		ret = -EAGAIN;
 		goto out_unlock;
 	}
 
@@ -2778,7 +2993,7 @@ fail:
 			xas_unlock(&xas);
 		local_irq_enable();
 		remap_page(folio, folio_nr_pages(folio));
-		ret = -EBUSY;
+		ret = -EAGAIN;
 	}
 
 out_unlock:
@@ -2796,6 +3011,7 @@ out:
 
 void free_transhuge_page(struct page *page)
 {
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	struct deferred_split *ds_queue = get_deferred_split_queue(page);
 	unsigned long flags;
 
@@ -2805,6 +3021,7 @@ void free_transhuge_page(struct page *page)
 		list_del(page_deferred_list(page));
 	}
 	spin_unlock_irqrestore(&ds_queue->split_queue_lock, flags);
+#endif
 	free_compound_page(page);
 }
 

@@ -7,6 +7,7 @@
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
 #include <linux/device.h>
+#include <linux/kobject.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -81,6 +82,32 @@
 #define LLCC_TRP_ALGO_CFG6            0x21F24 // ALLOC_OTHER_OC_ON_OC
 #define LLCC_TRP_ALGO_CFG7            0x21F28 // ALLOC_OTHER_LP_OC_ON_OC
 #define LLCC_TRP_ALGO_CFG8            0x21F30 // ALLOC_VICTIM_PL_ON_UC
+
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+#define MAXIMUM_ADAPT_CONFIG_NUM      31
+#define MINIMUM_ADAPT_CONFIG_NUM      1
+#define OPLUS_SUPPORT_VERSION         41
+
+
+#define __ATTR_WO_MODE(_name, _mode) {                          \
+		.attr = {.name = __stringify(_name),					\
+				 .mode = VERIFY_OCTAL_PERMISSIONS(_mode)},		\
+		.store = _name##_store,									\
+}
+#define KOBJ_ATTR(_name, _mode, _show, _store) \
+		struct kobj_attribute kobj_attr_##_name = __ATTR(_name, _mode, _show, _store)
+#define KOBJ_ATTR_RW(_name) \
+		struct kobj_attribute kobj_attr_##_name = __ATTR_RW(_name)
+#define KOBJ_ATTR_RW_MODE(_name, _mode) \
+		struct kobj_attribute kobj_attr_##_name = __ATTR_RW_MODE(_name, _mode)
+#define KOBJ_ATTR_RO(_name) \
+		struct kobj_attribute kobj_attr_##_name = __ATTR_RO(_name)
+#define KOBJ_ATTR_WO(_name) \
+		struct kobj_attribute kobj_attr_##_name = __ATTR_WO(_name)
+#define KOBJ_ATTR_WO_MODE(_name, _mode) \
+		struct kobj_attribute kobj_attr_##_name = __ATTR_WO_MODE(_name, _mode)
+
+#endif
 
 /**
  * llcc_slice_config - Data associated with the llcc slice
@@ -203,6 +230,24 @@ struct qcom_llcc_config {
 	const struct llcc_slice_config *sct_data;
 	int size;
 };
+
+// added by wangrui8 for game slc change
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+struct slc_param_record {
+	u32 slice_id;
+
+	// for attr1
+	u32 max_cap;
+	u32 cache_mode;
+	u32 probe_target_ways;
+	u32 priority;
+	u32 bonus_ways;
+	bool fixed_size;
+
+	u32 original_attr1;
+	u32 original_attr2;
+};
+#endif
 
 static const struct llcc_slice_config sc7180_data[] =  {
 	{ LLCC_CPUSS,    1,  256, 1, 0, 0xf, 0x0, 0, 0, 0, 1, 1 },
@@ -575,6 +620,18 @@ static const struct qcom_llcc_config monaco_auto_ivi_cfg = {
 	.size           = ARRAY_SIZE(monaco_auto_ivi_data),
 };
 
+/*
+ * wangrui8
+ * used to system cache test
+ */
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+static u32 ext_slice_id = 1;
+static u32 ext_client_index;
+static struct slc_param_record game_slc_record[MAXIMUM_ADAPT_CONFIG_NUM];
+static int ext_slice_record[MAXIMUM_ADAPT_CONFIG_NUM];
+static int ext_client_record[MAXIMUM_ADAPT_CONFIG_NUM];
+static struct mutex attr_write_lock;
+#endif
 static const struct llcc_slice_config anorak_data[] =  {
 	{LLCC_CPUSS,    1,  4096, 1, 1, 0xFFFFFFFF, 0x0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{LLCC_VIDSC0,   2,  512,  3, 1, 0xFFFFFFFF, 0x0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
@@ -590,7 +647,6 @@ static const struct qcom_llcc_config anorak_cfg = {
 	.sct_data       = anorak_data,
 	.size           = ARRAY_SIZE(anorak_data),
 };
-
 static struct llcc_drv_data *drv_data = (void *) -EPROBE_DEFER;
 static DEFINE_MUTEX(dev_avail);
 
@@ -968,6 +1024,9 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 	u32 wren = 0;
 	u32 wrcaen = 0;
 	u32 algo = 0;
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+	u32 sid = 0;
+#endif
 	int ret = 0;
 	const struct llcc_slice_config *llcc_table;
 	struct llcc_slice_desc *desc;
@@ -1015,6 +1074,23 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 			attr0_val = llcc_table[i].res_ways & ATTR0_RES_WAYS_MASK;
 			attr0_val |= llcc_table[i].bonus_ways << ATTR0_BONUS_WAYS_SHIFT;
 		}
+
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+		// added by wangrui8
+		sid = llcc_table[i].slice_id;
+		if (sid < MAXIMUM_ADAPT_CONFIG_NUM) {
+			ext_client_record[sid] = i;
+			game_slc_record[i].max_cap = llcc_table[i].max_cap;
+			game_slc_record[i].cache_mode = llcc_table[i].cache_mode;
+			game_slc_record[i].fixed_size = llcc_table[i].fixed_size;
+			game_slc_record[i].priority = llcc_table[i].priority;
+			game_slc_record[i].bonus_ways = llcc_table[i].bonus_ways;
+			game_slc_record[i].probe_target_ways = llcc_table[i].probe_target_ways;
+
+			game_slc_record[i].original_attr1 = attr1_val;
+			game_slc_record[i].original_attr2 = attr2_val;
+		}
+#endif
 
 		ret = regmap_write(drv_data->bcast_regmap, attr1_cfg,
 					attr1_val);
@@ -1177,6 +1253,467 @@ static struct regmap *qcom_llcc_init_mmio(struct platform_device *pdev,
 	return devm_regmap_init_mmio(&pdev->dev, base, &llcc_regmap_config);
 }
 
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+//added by wangrui8
+static ssize_t slice_id_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret = 0;
+	u32 id;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &id);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+	if (id >= MINIMUM_ADAPT_CONFIG_NUM && id <= MAXIMUM_ADAPT_CONFIG_NUM) {
+		ext_slice_id = id;
+		ext_slice_record[id] = 1;
+		ext_client_index = ext_client_record[id];
+	}
+
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static ssize_t slice_id_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	int ret = 0;
+	u32 act_ctrl_reg;
+	u32 act_ctrl_reg_val;
+	u32 attr1_cfg;
+	u32 attr0_cfg;
+	u32 attr1_val;
+	u32 attr0_val;
+
+	mutex_lock(&attr_write_lock);
+	attr1_cfg = LLCC_TRP_ATTR1_CFGn(ext_slice_id);
+	attr0_cfg = LLCC_TRP_ATTR0_CFGn(ext_slice_id);
+	act_ctrl_reg = LLCC_TRP_ACT_CTRLn(ext_slice_id);
+
+	ret = regmap_read(drv_data->bcast_regmap, attr1_cfg, &attr1_val);
+	ret |= regmap_read(drv_data->bcast_regmap, attr0_cfg, &attr0_val);
+	ret |= regmap_read(drv_data->bcast_regmap, act_ctrl_reg, &act_ctrl_reg_val);
+	if (!ret)
+		pr_err("slice %d control register : 0x%x, 0x%x, 0x%x, %s\n", ext_slice_id, attr1_val, attr1_cfg, act_ctrl_reg_val, __func__);
+	mutex_unlock(&attr_write_lock);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", attr1_val);
+}
+
+static ssize_t attr1_write_default(u32 attr1, u32 slice_id, u32 usecase_id, bool activate)
+{
+	u32 attr1_cfg;
+	u32 attr1_val;
+	int ret = 0;
+	struct llcc_slice_desc *desc;
+
+	attr1_cfg = LLCC_TRP_ATTR1_CFGn(slice_id);
+	attr1_val = attr1;
+
+	desc = llcc_slice_getd(usecase_id);
+	if (PTR_ERR_OR_ZERO(desc)) {
+		pr_err("Failed to get slice=%d\n", slice_id);
+		return ret;
+	}
+
+	ret = llcc_slice_deactivate(desc);
+
+	ret = regmap_write(drv_data->bcast_regmap, attr1_cfg, attr1_val);
+	if (ret)
+		return ret;
+
+	if (activate) {
+		ret = llcc_slice_activate(desc);
+		if (ret)
+			pr_err("Failed to activate slice=%d\n", slice_id);
+	}
+	return ret;
+}
+
+static ssize_t attr1_write(struct slc_param_record *recorder, u32 usecase_id)
+{
+	u32 attr1_cfg;
+	u32 attr1_val;
+	u32 max_cap;
+	int ret = 0;
+	struct llcc_slice_desc *desc;
+
+	attr1_cfg = LLCC_TRP_ATTR1_CFGn(ext_slice_id);
+	attr1_val = recorder->cache_mode;
+	attr1_val |= recorder->probe_target_ways << ATTR1_PROBE_TARGET_WAYS_SHIFT;
+	attr1_val |= recorder->fixed_size << ATTR1_FIXED_SIZE_SHIFT;
+	attr1_val |= recorder->priority << ATTR1_PRIORITY_SHIFT;
+
+	max_cap = MAX_CAP_TO_BYTES(recorder->max_cap);
+	do_div(max_cap, drv_data->num_banks);
+	max_cap >>= CACHE_LINE_SIZE_SHIFT;
+	attr1_val |= max_cap << ATTR1_MAX_CAP_SHIFT;
+
+	desc = llcc_slice_getd(usecase_id);
+	if (PTR_ERR_OR_ZERO(desc)) {
+		pr_err("Failed to get slice=%d\n", ext_slice_id);
+		return ret;
+	}
+
+	ret = llcc_slice_deactivate(desc);
+
+	ret = regmap_write(drv_data->bcast_regmap, attr1_cfg, attr1_val);
+	if (ret)
+		return ret;
+
+	ret = llcc_slice_activate(desc);
+	if (ret)
+		pr_err("Failed to activate slice=%d\n", ext_slice_id);
+
+	return ret;
+}
+
+static ssize_t attr2_write_default(u32 attr2, u32 slice_id, u32 usecase_id, bool activate)
+{
+	u32 attr2_cfg;
+	u32 attr2_val;
+	int ret = 0;
+	struct llcc_slice_desc *desc;
+
+	if (drv_data->llcc_ver >= OPLUS_SUPPORT_VERSION) {
+		attr2_cfg = LLCC_TRP_ATTR2_CFGn(slice_id);
+		attr2_val = attr2;
+
+		desc = llcc_slice_getd(usecase_id);
+		if (PTR_ERR_OR_ZERO(desc)) {
+			pr_err("Failed to get slice=%d\n", slice_id);
+			return ret;
+		}
+
+		ret = llcc_slice_deactivate(desc);
+
+		ret = regmap_write(drv_data->bcast_regmap, attr2_cfg, attr2_val);
+		if (ret)
+			return ret;
+
+		if (activate) {
+			ret = llcc_slice_activate(desc);
+			if (ret)
+				pr_err("Failed to activate slice=%d\n", slice_id);
+		}
+	}
+
+	return ret;
+}
+
+static ssize_t attr2_write(struct slc_param_record *recorder, u32 usecase_id)
+{
+	u32 attr2_cfg;
+	u32 attr2_val;
+	int ret = 0;
+	struct llcc_slice_desc *desc;
+
+	if (drv_data->llcc_ver >= 41) {
+		attr2_cfg = LLCC_TRP_ATTR2_CFGn(ext_slice_id);
+		attr2_val = recorder->bonus_ways;
+
+		desc = llcc_slice_getd(usecase_id);
+		if (PTR_ERR_OR_ZERO(desc)) {
+			pr_err("Failed to get slice=%d\n", ext_slice_id);
+			return ret;
+		}
+
+		ret = llcc_slice_deactivate(desc);
+
+		ret = regmap_write(drv_data->bcast_regmap, attr2_cfg, attr2_val);
+		if (ret)
+			return ret;
+
+		ret = llcc_slice_activate(desc);
+		if (ret)
+			pr_err("Failed to activate slice=%d\n", ext_slice_id);
+	}
+
+	return ret;
+}
+
+static ssize_t max_cap_write(u32 max_cap_cacheline)
+{
+	u32 sz;
+	int ret = 0;
+	struct slc_param_record *recorder;
+	const struct llcc_slice_config *llcc_table;
+
+	sz = drv_data->cfg_size;
+	llcc_table = drv_data->cfg;
+
+	if (ext_client_index >= 0 && ext_client_index < sz) {
+		game_slc_record[ext_client_index].max_cap = max_cap_cacheline;
+		recorder = &game_slc_record[ext_client_index];
+		ret = attr1_write(recorder, llcc_table[ext_client_index].usecase_id);
+	}
+	return ret;
+}
+
+static ssize_t max_cap_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret = 0;
+	u32 max_cap_cacheline;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &max_cap_cacheline);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+
+	ret = max_cap_write(max_cap_cacheline);
+	if (ret) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static void activate_write(u32 activate)
+{
+	u32 sz;
+	int ret = 0;
+	struct llcc_slice_desc *desc;
+	const struct llcc_slice_config *llcc_table;
+
+	sz = drv_data->cfg_size;
+	llcc_table = drv_data->cfg;
+
+	if (activate == 1 && ext_client_index < sz && ext_client_index >= 0) {
+		desc = llcc_slice_getd(llcc_table[ext_client_index].usecase_id);
+		if (PTR_ERR_OR_ZERO(desc)) {
+			pr_err("Failed to get slice=%d\n", ext_slice_id);
+			return;
+		}
+
+		ret = llcc_slice_activate(desc);
+		if (ret)
+			pr_err("Failed to activate slice=%d\n", ext_slice_id);
+	}
+}
+
+static ssize_t activate_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret = 0;
+	u32 activate;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &activate);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+
+	activate_write(activate);
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static ssize_t priority_write(u32 priority)
+{
+
+	u32 sz;
+	int ret = 0;
+	struct slc_param_record *recorder;
+	const struct llcc_slice_config *llcc_table;
+
+	sz = drv_data->cfg_size;
+	llcc_table = drv_data->cfg;
+
+	if (ext_client_index >= 0 && ext_client_index < sz) {
+		game_slc_record[ext_client_index].priority = priority;
+		recorder = &game_slc_record[ext_client_index];
+		ret = attr1_write(recorder, llcc_table[ext_client_index].usecase_id);
+	}
+	return ret;
+}
+
+static ssize_t priority_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	u32 priority;
+	int ret = 0;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &priority);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+
+	ret = priority_write(priority);
+	if (ret) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static ssize_t fixed_size_write(u32 fixed_size)
+{
+	u32 sz;
+	int ret = 0;
+	struct slc_param_record *recorder;
+	const struct llcc_slice_config *llcc_table;
+
+	sz = drv_data->cfg_size;
+	llcc_table = drv_data->cfg;
+
+	if (ext_client_index >= 0 && ext_client_index < sz) {
+		game_slc_record[ext_client_index].fixed_size = fixed_size;
+		recorder = &game_slc_record[ext_client_index];
+		ret = attr1_write(recorder, llcc_table[ext_client_index].usecase_id);
+	}
+	return ret;
+}
+
+static ssize_t fixed_size_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+
+	u32 fixed_size;
+	int ret = 0;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &fixed_size);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+
+	ret = fixed_size_write(fixed_size);
+	if (ret) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static ssize_t bonus_way_write(u32 bonus_ways)
+{
+	u32 sz;
+	int ret = 0;
+	struct slc_param_record *recorder;
+	const struct llcc_slice_config *llcc_table;
+
+	sz = drv_data->cfg_size;
+	llcc_table = drv_data->cfg;
+
+	if (ext_client_index >= 0 && ext_client_index < sz) {
+		game_slc_record[ext_client_index].bonus_ways = bonus_ways;
+		recorder = &game_slc_record[ext_client_index];
+		ret = attr2_write(recorder, llcc_table[ext_client_index].usecase_id);
+	}
+	return ret;
+}
+
+static ssize_t bonus_ways_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	u32 bonus_ways;
+	int ret = 0;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &bonus_ways);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+
+	ret = bonus_way_write(bonus_ways);
+	if (ret < 0) {
+		mutex_unlock(&attr_write_lock);
+		return ret;
+	}
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static ssize_t reset_all_slice_to_default_store(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret = 0;
+	int index = 0;
+	u32 sz;
+	u32 ins = 0;
+	const struct llcc_slice_config *llcc_table;
+
+	mutex_lock(&attr_write_lock);
+	ret = kstrtouint(buf, 0, &ins);
+	if (ins != 1) {
+		mutex_unlock(&attr_write_lock);
+		return -1;
+	}
+
+	sz = drv_data->cfg_size;
+	llcc_table = drv_data->cfg;
+
+	for (int i = 0; i < MAXIMUM_ADAPT_CONFIG_NUM; i++) {
+		if (ext_slice_record[i] == 1) {
+			index = ext_client_record[i];
+			if (index >= 0 && index < sz) {
+				attr1_write_default(game_slc_record[index].original_attr1, i, llcc_table[index].usecase_id, llcc_table[index].activate_on_init);
+				attr2_write_default(game_slc_record[index].original_attr2, i, llcc_table[index].usecase_id, llcc_table[index].activate_on_init);
+				game_slc_record[index].max_cap = llcc_table[index].max_cap;
+				game_slc_record[index].cache_mode = llcc_table[index].cache_mode;
+				game_slc_record[index].fixed_size = llcc_table[index].fixed_size;
+				game_slc_record[index].priority = llcc_table[index].priority;
+				game_slc_record[index].bonus_ways = llcc_table[index].bonus_ways;
+				game_slc_record[index].probe_target_ways = llcc_table[index].probe_target_ways;
+			}
+			ext_slice_record[i] = 0;
+		}
+	}
+	ext_slice_id = 1;
+	ext_client_index = 0;
+	mutex_unlock(&attr_write_lock);
+	return count;
+}
+
+static KOBJ_ATTR_RW_MODE(slice_id, 0660);
+static KOBJ_ATTR_WO_MODE(max_cap, 0220);
+static KOBJ_ATTR_WO_MODE(activate, 0220);
+static KOBJ_ATTR_WO_MODE(priority, 0220);
+static KOBJ_ATTR_WO_MODE(fixed_size, 0220);
+static KOBJ_ATTR_WO_MODE(bonus_ways, 0220);
+// static KOBJ_ATTR_WO_MODE(res_ways, 0220);
+// static KOBJ_ATTR_WO_MODE(cache_mode, 0220);
+// static KOBJ_ATTR_WO_MODE(probe_target_ways, 0220);
+// static KOBJ_ATTR_WO_MODE(dis_cap_alloc, 0220);
+// static KOBJ_ATTR_WO_MODE(retain_on_pc, 0220);
+static KOBJ_ATTR_WO_MODE(reset_all_slice_to_default, 0220);
+
+static struct attribute *all_node_attrs[] = {
+	&kobj_attr_slice_id.attr,
+	&kobj_attr_max_cap.attr,
+	&kobj_attr_activate.attr,
+	&kobj_attr_priority.attr,
+	&kobj_attr_fixed_size.attr,
+	&kobj_attr_bonus_ways.attr,
+	// &kobj_attr_res_ways.attr,
+	// &kobj_attr_cache_mode.attr,
+	// &kobj_attr_probe_target_ways.attr,
+	// &kobj_attr_dis_cap_alloc.attr,
+	// &kobj_attr_retain_on_pc.attr,
+	&kobj_attr_reset_all_slice_to_default.attr,
+	NULL,
+};
+
+static struct attribute_group node_attrs_group = {
+	.name = "qcom_llcc",
+	.attrs = all_node_attrs,
+};
+#endif
+
 static int qcom_llcc_probe(struct platform_device *pdev)
 {
 	u32 num_banks;
@@ -1189,9 +1726,13 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 	void __iomem *ch_reg = NULL;
 	u32 sz, max_banks, ch_reg_sz, ch_reg_off, ch_num;
 
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+	//added by wangrui8
+	struct kobject *all_node_device = NULL;
+#endif
+
 	if (!IS_ERR(drv_data))
 		return -EBUSY;
-
 	drv_data = devm_kzalloc(dev, sizeof(*drv_data), GFP_KERNEL);
 	if (!drv_data) {
 		ret = -ENOMEM;
@@ -1315,6 +1856,23 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 	drv_data->cfg_size = sz;
 	mutex_init(&drv_data->lock);
 	platform_set_drvdata(pdev, drv_data);
+
+#if IS_ENABLED(CONFIG_OPLUS_GAME_LLCC)
+	//added by wangrui8
+	mutex_init(&attr_write_lock);
+	all_node_device = kobject_create_and_add("game_slc_slice", NULL);
+	if (all_node_device == NULL) {
+		pr_err("%s: subsystem_register failed\n", __func__);
+			//ret = -ENOMEM;
+			//return ret;
+	}
+
+	ret = sysfs_create_group(all_node_device, &node_attrs_group);
+	if (ret) {
+		pr_err("%s: sysfs_create_file failed\n", __func__);
+		kobject_del(all_node_device);
+	}
+#endif
 
 	ret = qcom_llcc_cfg_program(pdev);
 	if (ret) {

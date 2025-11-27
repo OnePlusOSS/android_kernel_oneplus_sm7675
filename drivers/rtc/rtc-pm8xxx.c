@@ -13,6 +13,9 @@
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 
+#undef  dev_dbg
+#define dev_dbg dev_err
+
 /* RTC Register offsets from RTC CTRL REG */
 #define PM8XXX_ALARM_CTRL_OFFSET	0x01
 #define PM8XXX_RTC_WRITE_OFFSET		0x02
@@ -101,6 +104,7 @@ static int pm8xxx_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	spin_lock_irqsave(&rtc_dd->ctrl_reg_lock, irq_flags);
 
 	rc = regmap_read(rtc_dd->regmap, regs->alarm_ctrl, &ctrl_reg);
+	pr_err("ythan pm8xxx_rtc_set_time 0x6246=0x%x, alarm_en=0x%x\n",ctrl_reg,regs->alarm_en);
 	if (rc)
 		goto rtc_rw_fail;
 
@@ -123,6 +127,7 @@ static int pm8xxx_rtc_set_time(struct device *dev, struct rtc_time *tm)
 		rtc_disabled = 1;
 		rtc_ctrl_reg &= ~PM8xxx_RTC_ENABLE;
 		rc = regmap_write(rtc_dd->regmap, regs->ctrl, rtc_ctrl_reg);
+		pr_err("ythan pm8xxx_rtc_set_time 0x6246=0x%x\n",ctrl_reg);
 		if (rc) {
 			dev_err(dev, "Write to RTC control register failed\n");
 			goto rtc_rw_fail;
@@ -160,7 +165,7 @@ static int pm8xxx_rtc_set_time(struct device *dev, struct rtc_time *tm)
 			goto rtc_rw_fail;
 		}
 	}
-
+	pr_err("ythan pm8xxx_rtc_set_time 0x6246=0x%x alarm_en=0x%x alarm_enabled=%d\n",ctrl_reg,regs->alarm_en,alarm_enabled);
 	if (alarm_enabled) {
 		ctrl_reg |= regs->alarm_en;
 		rc = regmap_write(rtc_dd->regmap, regs->alarm_ctrl, ctrl_reg);
@@ -215,7 +220,7 @@ static int pm8xxx_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	rtc_time64_to_tm(secs, tm);
 
-	dev_dbg(dev, "secs = %lu, h:m:s == %ptRt, y-m-d = %ptRdr\n", secs, tm, tm);
+	/* dev_dbg(dev, "secs = %lu, h:m:s == %ptRt, y-m-d = %ptRdr\n", secs, tm, tm); */
 
 	return 0;
 }
@@ -242,13 +247,14 @@ static int pm8xxx_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 
 	spin_lock_irqsave(&rtc_dd->ctrl_reg_lock, irq_flags);
 
+	pr_err("ythan pm8xxx_rtc_set_alarm, DATA[0x%x][0x%x][0x%x][0x%x]\n",value[0],value[1],value[2],value[3]);
 	rc = regmap_bulk_write(rtc_dd->regmap, regs->alarm_rw, value,
 			       sizeof(value));
 	if (rc) {
 		dev_err(dev, "Write to RTC ALARM register failed\n");
 		goto rtc_rw_fail;
 	}
-
+	pr_err("ythan pm8xxx_rtc_set_alarm alarm_en=%d alarm_enabled=%d\n", regs->alarm_en,alarm->enabled);
 	if (alarm->enabled) {
 		rc = regmap_update_bits(rtc_dd->regmap, regs->alarm_ctrl,
 					regs->alarm_en, regs->alarm_en);
@@ -289,6 +295,7 @@ static int pm8xxx_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 		dev_err(dev, "Read from RTC alarm control register failed\n");
 		return rc;
 	}
+	pr_err("ythan pm8xxx_rtc_read_alarm 0x6246=0x%x alarm_enabled=%d\n", ctrl_reg,alarm->enabled);
 	alarm->enabled = !!(ctrl_reg & PM8xxx_RTC_ALARM_ENABLE);
 
 	dev_dbg(dev, "Alarm set for - h:m:s=%ptRt, y-m-d=%ptRdr\n",
@@ -309,6 +316,7 @@ static int pm8xxx_rtc_alarm_irq_enable(struct device *dev, unsigned int enable)
 	spin_lock_irqsave(&rtc_dd->ctrl_reg_lock, irq_flags);
 
 	rc = regmap_read(rtc_dd->regmap, regs->alarm_ctrl, &ctrl_reg);
+	pr_err("ythan pm8xxx_rtc_alarm_irq_enable alarm_ctrl=0x%x alarm_en=%d enable=%d\n", ctrl_reg,regs->alarm_en,enable);
 	if (rc)
 		goto rtc_rw_fail;
 
@@ -318,6 +326,7 @@ static int pm8xxx_rtc_alarm_irq_enable(struct device *dev, unsigned int enable)
 		ctrl_reg &= ~regs->alarm_en;
 
 	rc = regmap_write(rtc_dd->regmap, regs->alarm_ctrl, ctrl_reg);
+	pr_err("ythan pm8xxx_rtc_alarm_irq_enable alarm_ctrl=0x%x alarm_en=%d enable=%d\n", ctrl_reg,regs->alarm_en,enable);
 	if (rc) {
 		dev_err(dev, "Write to RTC control register failed\n");
 		goto rtc_rw_fail;
@@ -367,6 +376,7 @@ static irqreturn_t pm8xxx_alarm_trigger(int irq, void *dev_id)
 	ctrl_reg &= ~regs->alarm_en;
 
 	rc = regmap_write(rtc_dd->regmap, regs->alarm_ctrl, ctrl_reg);
+	pr_err("ythan pm8xxx_alarm_trigger alarm_ctrl=0x%x alarm_en=%d \n", ctrl_reg,regs->alarm_en);
 	if (rc) {
 		spin_unlock(&rtc_dd->ctrl_reg_lock);
 		dev_err(rtc_dd->rtc_dev,
@@ -386,6 +396,7 @@ static irqreturn_t pm8xxx_alarm_trigger(int irq, void *dev_id)
 
 	ctrl_reg |= PM8xxx_RTC_ALARM_CLEAR;
 	rc = regmap_write(rtc_dd->regmap, regs->alarm_ctrl2, ctrl_reg);
+	pr_err("ythan pm8xxx_alarm_trigger alarm_ctrl2=0x%x\n", ctrl_reg);
 	if (rc)
 		dev_err(rtc_dd->rtc_dev,
 			"Write to RTC Alarm control2 register failed\n");
@@ -539,6 +550,7 @@ static int pm8xxx_rtc_probe(struct platform_device *pdev)
 
 	if (of_property_read_bool(pdev->dev.of_node, "qcom,support-deepsleep"))
 		rtc_dd->deepsleep_support = true;
+	dev_err(&pdev->dev, "ythan probe success \n");
 
 	return 0;
 }

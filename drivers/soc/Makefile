@@ -33,3 +33,35 @@ obj-y				+= ti/
 obj-$(CONFIG_ARCH_U8500)	+= ux500/
 obj-$(CONFIG_PLAT_VERSATILE)	+= versatile/
 obj-y				+= xilinx/
+
+#ifdef OPLUS_FEATURE_MM_FEEDBACK
+obj-$(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)	+= oplus/multimedia/
+#endif /* OPLUS_FEATURE_MM_FEEDBACK */
+
+#ifdef OPLUS_TRACKPOINT_REPORT
+obj-$(CONFIG_OPLUS_TRACKPOINT_REPORT)	+= oplus/trackpoint/
+#endif /* OPLUS_TRACKPOINT_REPORT */
+
+#ifdef OPLUS_FEATURE_TP_BASIC
+obj-$(CONFIG_OPLUS_DEVICE_IFNO)  +=  oplus/device_info/
+#endif /* OPLUS_FEATURE_TP_BASIC */
+
+#ifdef OPLUS_FEATURE_BOOT
+obj-y += oplus/boot/
+#endif /* OPLUS_FEATURE_BOOT */
+
+#ifdef OPLUS_FEATURE_MODEM_MINIDUMP
+obj-$(CONFIG_OPLUS_FEATURE_RECORD_MDMRST)     += oplus/mdmrst/
+#endif /*OPLUS_FEATURE_MODEM_MINIDUMP*/
+
+obj-$(CONFIG_OPLUS_FEATURE_QCOM_WATCHDOG) += oplus/boot/qcom_watchdog/
+obj-y += oplus/dft/
+
+#ifdef OPLUS_UFS_DRIVER
+obj-y     += oplus/storage/
+obj-$(CONFIG_OPLUS_UFS_DRIVER) += oplus/storage/common/file_record/
+#endif
+
+#ifdef OPLUS_SUBSYS_SLEEP_MONITOR
+obj-$(CONFIG_OPLUS_SUBSYS_SLEEP_MONITOR)     += oplus/power/subsys_sleep_monitor/
+#endif /* OPLUS_SUBSYS_SLEEP_MONITOR */

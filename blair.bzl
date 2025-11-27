@@ -223,6 +223,7 @@ def define_blair():
         "net/qrtr/qrtr-smd.ko",
         "net/wireless/cfg80211.ko",
         "sound/usb/snd-usb-audio-qmi.ko",
+        "drivers/nfc/oplus_nfc/oplus_nfc.ko",
     ]
 
     _blair_consolidate_in_tree_modules = _blair_in_tree_modules + [

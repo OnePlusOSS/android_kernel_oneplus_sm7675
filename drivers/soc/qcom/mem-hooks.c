@@ -23,6 +23,21 @@
 static uint kswapd_threads;
 module_param_named(kswapd_threads, kswapd_threads, uint, 0644);
 
+/* Taken from arch/arm64/mm/fault.c */
+static bool is_el1_instruction_abort(unsigned long esr)
+{
+	return ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_CUR;
+}
+
+static void can_fixup_sea(void *unused, unsigned long addr, unsigned long esr,
+			struct pt_regs *regs, bool *can_fixup)
+{
+	if (!user_mode(regs) && !is_el1_instruction_abort(esr))
+		*can_fixup = true;
+	else
+		*can_fixup = false;
+}
+
 static void balance_reclaim(void *unused, bool *balance_anon_file_reclaim)
 {
 	*balance_anon_file_reclaim = true;
@@ -106,20 +121,6 @@ static int init_kswapd_per_node_hook(void)
 			kswapd_per_node_run(nid, kswapd_threads);
 	}
 	return ret;
-}
-
-static bool is_el1_instruction_abort(unsigned long esr)
-{
-	return ESR_ELx_EC(esr) == ESR_ELx_EC_IABT_CUR;
-}
-
-static void can_fixup_sea(void *unused, unsigned long addr, unsigned long esr,
-			  struct pt_regs *regs, bool *can_fixup)
-{
-	if (!user_mode(regs) && !is_el1_instruction_abort(esr))
-		*can_fixup = true;
-	else
-		*can_fixup = false;
 }
 
 static int __init init_mem_hooks(void)

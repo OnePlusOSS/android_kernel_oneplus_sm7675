@@ -256,6 +256,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 			continue;
 		}
 
+		trace_android_vh_io_statistics(mapping, index + i, 1, true, false);
 		folio = filemap_alloc_folio(gfp_mask, 0);
 		if (!folio)
 			break;
@@ -494,7 +495,7 @@ static inline int ra_alloc_folio(struct readahead_control *ractl, pgoff_t index,
 
 	if (!folio)
 		return -ENOMEM;
-	mark = round_up(mark, 1UL << order);
+	mark = round_down(mark, 1UL << order);
 	if (index == mark)
 		folio_set_readahead(folio);
 	err = filemap_add_folio(ractl->mapping, folio, index, gfp);
@@ -515,6 +516,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 	pgoff_t index = readahead_index(ractl);
 	pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
 	pgoff_t mark = index + ra->size - ra->async_size;
+	unsigned int nofs;
 	int err = 0;
 	gfp_t gfp = readahead_gfp_mask(mapping);
 
@@ -531,6 +533,8 @@ void page_cache_ra_order(struct readahead_control *ractl,
 			new_order--;
 	}
 
+	/* See comment in page_cache_ra_unbounded() */
+	nofs = memalloc_nofs_save();
 	filemap_invalidate_lock_shared(mapping);
 	while (index <= limit) {
 		unsigned int order = new_order;
@@ -559,6 +563,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 
 	read_pages(ractl);
 	filemap_invalidate_unlock_shared(mapping);
+	memalloc_nofs_restore(nofs);
 
 	/*
 	 * If there were already pages in the page cache, then we may have
@@ -592,6 +597,9 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	if (req_size > max_pages && bdi->io_pages > max_pages)
 		max_pages = min(req_size, bdi->io_pages);
 
+#ifdef CONFIG_OPLUS_DYNAMIC_READAHEAD
+	max_pages = adjust_readahead(ra, max_pages);
+#endif
 	trace_android_vh_ra_tuning_max_page(ractl, &max_pages);
 
 	/*
@@ -604,7 +612,7 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	 * It's the expected callback index, assume sequential access.
 	 * Ramp up sizes, and push forward the readahead window.
 	 */
-	expected = round_up(ra->start + ra->size - ra->async_size,
+	expected = round_down(ra->start + ra->size - ra->async_size,
 			1UL << order);
 	if (index == expected || index == (ra->start + ra->size)) {
 		ra->start += ra->size;

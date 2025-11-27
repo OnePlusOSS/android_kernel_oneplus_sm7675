@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023, 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/irqdomain.h>
 #include <linux/delay.h>
@@ -38,6 +38,13 @@
 #define MASK_SIZE        32
 
 static struct msm_watchdog_data *wdog_data;
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_QCOM_WATCHDOG)
+extern void oplus_dump_cpu_online_smp_call(void);
+extern void oplus_get_cpu_ping_mask(cpumask_t *pmask, int *cpu_idle_pc_state);
+extern void oplus_dump_wdog_cpu(struct task_struct *w_task);
+extern void oplus_show_utc_time(void);
+#endif
 
 static void qcom_wdt_dump_cpu_alive_mask(struct msm_watchdog_data *wdog_dd)
 {
@@ -519,6 +526,11 @@ static void qcom_wdt_ping_other_cpus(struct msm_watchdog_data *wdog_dd)
 {
 	int cpu;
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_QCOM_WATCHDOG)
+    /* donelle@BSP, print more info on pet watchdog */
+    cpumask_t mask;
+    oplus_get_cpu_ping_mask(&mask, wdog_dd->cpu_idle_pc_state);
+#endif
 	cpumask_clear(&wdog_dd->alive_mask);
 	/* Make sure alive mask is cleared and set in order */
 	smp_mb();
@@ -584,6 +596,12 @@ static __ref int qcom_wdt_kthread(void *arg)
 			wdog_dd->ops->reset_wdt(wdog_dd);
 			wdog_dd->last_pet = sched_clock();
 		}
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_QCOM_WATCHDOG)
+        /* for UCT time print, over 30s print once */
+        oplus_show_utc_time();
+#endif
+
 		/* Check again before scheduling
 		 * Could have been changed on other cpu
 		 */
@@ -692,22 +710,31 @@ static irqreturn_t qcom_wdt_bark_handler(int irq, void *dev_id)
 	struct msm_watchdog_data *wdog_dd = dev_id;
 	unsigned long nanosec_rem;
 	unsigned long long t = sched_clock();
+	unsigned long long tp = wdog_dd->last_pet;
 
 	nanosec_rem = do_div(t, 1000000000);
 	dev_info(wdog_dd->dev, "QCOM Apps Watchdog bark! Now = %lu.%06lu\n",
 			(unsigned long) t, nanosec_rem / 1000);
 
-	nanosec_rem = do_div(wdog_dd->last_pet, 1000000000);
+	nanosec_rem = do_div(tp, 1000000000);
 	dev_info(wdog_dd->dev, "QCOM Apps Watchdog last pet at %lu.%06lu\n",
-			(unsigned long) wdog_dd->last_pet, nanosec_rem / 1000);
+			(unsigned long) tp, nanosec_rem / 1000);
 	if (wdog_dd->do_ipi_ping)
 		qcom_wdt_dump_cpu_alive_mask(wdog_dd);
 
 	if (wdog_dd->freeze_in_progress)
 		dev_info(wdog_dd->dev, "Suspend in progress\n");
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_QCOM_WATCHDOG)
+    /* donelle@BSP, print online cpu */
+    oplus_dump_cpu_online_smp_call();
+    oplus_dump_wdog_cpu(wdog_dd->watchdog_task);
+    /* donelle@BSP,  delete trigger wdog bite, panic will trigger wdog if in dload mode*/
+    panic("Handle a watchdog bite! - Falling back to kernel panic!");
+#else
 	md_dump_process();
 	qcom_wdt_trigger_bite();
+#endif
 
 	return IRQ_HANDLED;
 }

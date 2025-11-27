@@ -54,7 +54,8 @@ obj-y			:= filemap.o mempool.o oom_kill.o fadvise.o \
 			   mm_init.o percpu.o slab_common.o \
 			   compaction.o \
 			   interval_tree.o list_lru.o workingset.o \
-			   debug.o gup.o mmap_lock.o $(mmu-y)
+			   debug.o gup.o mmap_lock.o pgsize_migration.o \
+			   $(mmu-y)
 
 # Give 'page_alloc' its own module-parameter namespace
 page-alloc-y := page_alloc.o
@@ -140,3 +141,14 @@ obj-$(CONFIG_IO_MAPPING) += io-mapping.o
 obj-$(CONFIG_HAVE_BOOTMEM_INFO_NODE) += bootmem_info.o
 obj-$(CONFIG_GENERIC_IOREMAP) += ioremap.o
 obj-$(CONFIG_SHRINKER_DEBUG) += shrinker_debug.o
+obj-$(CONFIG_OPLUS_FEATURE_MM_OSVELTE) += mm_osvelte/
+obj-$(CONFIG_CONT_PTE_HUGEPAGE) += cont_pte_hugepage.o
+
+#ifdef OPLUS_KERNEL_MM
+obj-$(CONFIG_OPLUS_FEATURE_UXMEM_OPT) += oplus_bsp_uxmem_opt.o
+oplus_bsp_uxmem_opt-y := uxmem_opt.o
+
+obj-$(CONFIG_OPLUS_FEATURE_DYNAMIC_READAHEAD) += oplus_bsp_dynamic_readahead.o
+oplus_bsp_dynamic_readahead-y := dynamic_readahead.o
+#endif
+obj-$(CONFIG_BLOCKIO_UX_OPT) += fileprotect.o

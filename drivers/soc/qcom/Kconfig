@@ -183,6 +183,10 @@ config QCOM_LLCC
 	  SDM845. This provides interfaces to clients that use the LLCC.
 	  Say yes here to enable LLCC slice driver.
 
+config OPLUS_GAME_LLCC
+	tristate "oplus llcc game control"
+	depends on QCOM_LLCC
+
 config QCOM_KRYO_L2_ACCESSORS
 	bool
 	depends on ARCH_QCOM && ARM64 || COMPILE_TEST
@@ -395,6 +399,24 @@ config QCOM_SMP2P
 	help
 	  Say yes here to support the Qualcomm Shared Memory Point to Point
 	  protocol.
+
+config OPLUS_FEATURE_STANDBY_NETLINK_CLOCK
+	bool "Enable clocks statistics collection for Standby Netlink Channel"
+	default n
+	help
+	This configuration enables the clocks info statistics via a special protocol on the standby netlink channel.
+
+config OPLUS_FEATURE_STANDBY_NETLINK_REGULATOR
+	bool "Enable regulators statistics collection for Standby Netlink Channel"
+	default n
+	help
+	This configuration enables the regulators info statistics via a special protocol on the standby netlink channel.
+
+config OPLUS_FEATURE_STANDBY_NETLINK_SMP2P
+	bool "Enable SMP2P statistics collection for Standby Netlink Channel"
+	default n
+	help
+	This configuration enables the smp2p info statistics via a special protocol on the standby netlink channel.
 
 config QCOM_SMSM
 	tristate "Qualcomm Shared Memory State Machine"
@@ -665,7 +687,7 @@ config QCOM_WATCHDOG_BARK_TIME
 	depends on QCOM_WDT_CORE
 	int "Qualcomm Technologies, Inc. Watchdog bark time in ms"
 	default 11000
-	range 11000 11000
+	range 11000 22000
 	help
 	  The amount of time, in milliseconds, that should elapse after
 	  a watchdog timer reset before a bark interrupt is sent from the
@@ -971,6 +993,16 @@ config QCOM_MINIDUMP_PANIC_MEMORY_INFO
 	  This enables memory info collection in minidump table,
 	  on panic.
 
+config QCOM_MINIDUMP_PANIC_KTASK_STACK
+	bool "QCOM Minidump Panic dumps Kernel Task Stack"
+	depends on QCOM_MINIDUMP_PANIC_DUMP && DETECT_HUNG_TASK
+	default y
+	help
+	  This enables kernel task call stack dump in minidump
+	  table, on panic. Only the kernel tasks that in
+	  TASK_UNINTERRUPTIBLE (D) state will be dumped, also
+	  the time it stuck will be printed.
+
 config QCOM_MINIDUMP_PSTORE
 	bool "QCOM Minidump Pstore dumps Support"
 	depends on ARM64 && QCOM_MINIDUMP
@@ -1025,6 +1057,25 @@ config MINIDUMP_MAX_ENTRIES
 	help
 	  This defines maximum number of entries to be allocated for application
 	  subsytem in Minidump table.
+
+config MINIDUMP_ALL_TASK_INFO
+	bool "QCOM Minidump Panic dumps Kernel Task Info"
+	default y
+	depends on QCOM_MINIDUMP_PANIC_DUMP
+	help
+	  QCOM Minidump Panic dumps Kernel Task Info
+
+config OPLUS_RPMH_QCOM
+	bool "powerinfo rpmh config v2"
+	default n
+	help
+	  Select this config to enable powerinfo rpmh v2
+
+config OPLUS_POWERINFO_RPMH
+	bool "powerinfo rpmh config"
+	default n
+	help
+	  Select this config to enable powerinfo rpmh
 
 config QCOM_ADSP_SLEEPMON
 	tristate "ADSP sleep monitor"

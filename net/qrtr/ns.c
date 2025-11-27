@@ -118,6 +118,25 @@ int qrtr_get_service_id(unsigned int node_id, unsigned int port_id)
 }
 EXPORT_SYMBOL(qrtr_get_service_id);
 
+int qrtr_get_service_instance_id(unsigned int node_id, unsigned int port_id)
+{
+	struct qrtr_server *srv;
+	struct qrtr_node *node;
+	unsigned long index;
+
+	node = xa_load(&nodes, node_id);
+	if (!node)
+		return -EINVAL;
+
+	xa_for_each(&node->servers, index, srv) {
+		if (srv->node == node_id && srv->port == port_id)
+			return srv->instance;
+	}
+
+	return -EINVAL;
+}
+EXPORT_SYMBOL(qrtr_get_service_instance_id);
+
 static int server_match(const struct qrtr_server *srv,
 			const struct qrtr_server_filter *f)
 {
@@ -550,7 +569,9 @@ static int ctrl_cmd_del_server(struct sockaddr_qrtr *from,
 	if (!node)
 		return -ENOENT;
 
-	return server_del(node, port, true);
+	server_del(node, port, true);
+
+	return 0;
 }
 
 static int ctrl_cmd_new_lookup(struct sockaddr_qrtr *from,
@@ -792,6 +813,24 @@ int qrtr_ns_init(void)
 	ret = say_hello(&qrtr_ns.bcast_sq);
 	if (ret < 0)
 		goto err_wq;
+
+	/* As the qrtr ns socket owner and creator is the same module, we have
+	 * to decrease the qrtr module reference count to guarantee that it
+	 * remains zero after the ns socket is created, otherwise, executing
+	 * "rmmod" command is unable to make the qrtr module deleted after the
+	 *  qrtr module is inserted successfully.
+	 *
+	 * However, the reference count is increased twice in
+	 * sock_create_kern(): one is to increase the reference count of owner
+	 * of qrtr socket's proto_ops struct; another is to increment the
+	 * reference count of owner of qrtr proto struct. Therefore, we must
+	 * decrement the module reference count twice to ensure that it keeps
+	 * zero after server's listening socket is created. Of course, we
+	 * must bump the module reference count twice as well before the socket
+	 * is closed.
+	 */
+	module_put(qrtr_ns.sock->ops->owner);
+	module_put(qrtr_ns.sock->sk->sk_prot_creator->owner);
 
 	return 0;
 

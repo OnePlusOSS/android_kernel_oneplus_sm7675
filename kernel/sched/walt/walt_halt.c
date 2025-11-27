@@ -9,6 +9,20 @@
 #include <walt.h>
 #include "trace.h"
 
+#ifdef CONFIG_OPLUS_ADD_CORE_CTRL_MASK
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+#include <../kernel/oplus_cpu/sched/frame_boost/frame_group.h>
+#endif
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_common.h>
+#include <../kernel/oplus_cpu/sched/sched_assist/sa_fair.h>
+#endif
+#endif /* CONFIG_OPLUS_ADD_CORE_CTRL_MASK */
+
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+#include "benchmark_test.h"
+#endif
+
 #ifdef CONFIG_HOTPLUG_CPU
 
 enum pause_type {
@@ -116,7 +130,13 @@ static void migrate_tasks(struct rq *dead_rq, struct rq_flags *rf)
 		 * There's this thread running, bail when that's the only
 		 * remaining thread:
 		 */
-		if (rq->nr_running == 1)
+		/* When ext enabled, tasks may exist in gloal rq */
+		/*if (rq->nr_running == 1)
+			break;
+		*/
+
+		next = pick_migrate_task(rq);
+		if (next == rq->idle)
 			break;
 
 		next = pick_migrate_task(rq);
@@ -380,13 +400,18 @@ static void update_clients(struct cpumask *cpus, bool halt, enum pause_client cl
 {
 	int cpu;
 	struct halt_cpu_state *halt_cpu_state;
+	int *pause_client_state;
 
 	for_each_cpu(cpu, cpus) {
 		halt_cpu_state = per_cpu_ptr(&halt_state, cpu);
-		if (halt)
+		pause_client_state = per_cpu_ptr(oplus_cur_pause_client, cpu);
+		if (halt) {
+			pause_client_state[type] |= client;
 			halt_cpu_state->client_vote_mask[type] |=  client;
-		else
+		}else {
+			pause_client_state[type] &= ~client;
 			halt_cpu_state->client_vote_mask[type] &= ~client;
+		}
 	}
 }
 
@@ -429,6 +454,11 @@ static int walt_halt_cpus(struct cpumask *cpus, enum pause_client client, enum p
 			 cpumask_pr_args(&requested_cpus));
 	else
 		update_clients(&requested_cpus, true, client, type);
+
+	cpumask_copy(&cur_cpus_halt_mask, cpu_halt_mask);
+	cpumask_copy(&cur_cpus_phalt_mask, cpu_partial_halt_mask);
+	sa_corectl_systrace_c();
+
 unlock:
 	raw_spin_unlock_irqrestore(&halt_lock, flags);
 
@@ -474,6 +504,9 @@ static int walt_start_cpus(struct cpumask *cpus, enum pause_client client, enum 
 		update_clients(&requested_cpus, true, client, type);
 	}
 
+	cpumask_copy(&cur_cpus_halt_mask, cpu_halt_mask);
+	cpumask_copy(&cur_cpus_phalt_mask, cpu_partial_halt_mask);
+	sa_corectl_systrace_c();
 	raw_spin_unlock_irqrestore(&halt_lock, flags);
 
 	return ret;
@@ -621,10 +654,17 @@ static void android_rvh_set_cpus_allowed_by_task(void *unused,
 	if (unlikely(walt_disabled))
 		return;
 
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (bm_set_cpus_allowed_by_task(cpu_valid_mask, new_mask, p, dest_cpu))
+		return;
+#endif
+
 	/* allow kthreads to change affinity regardless of halt status of dest_cpu */
 	if (p->flags & PF_KTHREAD)
 		return;
-
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	android_rvh_set_cpus_allowed_by_task_handler(unused, cpu_valid_mask, new_mask, p, dest_cpu);
+#endif
 	if (cpu_halted(*dest_cpu) && !p->migration_disabled) {
 		cpumask_t allowed_cpus;
 
@@ -708,6 +748,10 @@ static void android_rvh_is_cpu_allowed(void *unused, struct task_struct *p, int 
 			*allowed = true;
 		}
 	}
+#ifdef CONFIG_OPLUS_BENCHMARK_CPU
+	if (test_benchmark_task(p))
+		*allowed = true;
+#endif
 }
 
 void walt_halt_init(void)
@@ -721,6 +765,16 @@ void walt_halt_init(void)
 	}
 
 	sched_setscheduler_nocheck(walt_drain_thread, SCHED_FIFO, &param);
+
+#ifdef CONFIG_OPLUS_ADD_CORE_CTRL_MASK
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_FRAME_BOOST)
+	init_fbg_halt_mask(&__cpu_halt_mask);
+#endif
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	init_ux_halt_mask(&__cpu_halt_mask);
+#endif
+#endif /* CONFIG_OPLUS_ADD_CORE_CTRL_MASK */
 
 	register_trace_android_rvh_get_nohz_timer_target(android_rvh_get_nohz_timer_target, NULL);
 	register_trace_android_rvh_set_cpus_allowed_by_task(

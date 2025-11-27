@@ -84,6 +84,29 @@ int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, u64 timeout_us)
 }
 
 /*
+ * xhci_handshake_check_state - same as xhci_handshake but takes an additional
+ * exit_state parameter, and bails out with an error immediately when xhc_state
+ * has exit_state flag set.
+ */
+int xhci_handshake_check_state(struct xhci_hcd *xhci, void __iomem *ptr,
+		u32 mask, u32 done, int usec, unsigned int exit_state)
+{
+	u32	result;
+	int	ret;
+
+	ret = readl_poll_timeout_atomic(ptr, result,
+				(result & mask) == done ||
+				result == U32_MAX ||
+				xhci->xhc_state & exit_state,
+				1, usec);
+
+	if (result == U32_MAX || xhci->xhc_state & exit_state)
+		return -ENODEV;
+
+	return ret;
+}
+
+/*
  * Disable interrupts and begin the xHCI halting process.
  */
 void xhci_quiesce(struct xhci_hcd *xhci)
@@ -203,7 +226,8 @@ int xhci_reset(struct xhci_hcd *xhci, u64 timeout_us)
 	if (xhci->quirks & XHCI_INTEL_HOST)
 		udelay(1000);
 
-	ret = xhci_handshake(&xhci->op_regs->command, CMD_RESET, 0, timeout_us);
+	ret = xhci_handshake_check_state(xhci, &xhci->op_regs->command,
+				CMD_RESET, 0, timeout_us, XHCI_STATE_REMOVING);
 	if (ret)
 		return ret;
 
@@ -1251,10 +1275,20 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 			xhci_dbg(xhci, "Start the secondary HCD\n");
 			retval = xhci_run(xhci->shared_hcd);
 		}
-
+		if (retval)
+			return retval;
+		/*
+		 * Resume roothubs unconditionally as PORTSC change bits are not
+		 * immediately visible after xHC reset
+		 */
 		hcd->state = HC_STATE_SUSPENDED;
-		if (xhci->shared_hcd)
+
+		if (xhci->shared_hcd) {
 			xhci->shared_hcd->state = HC_STATE_SUSPENDED;
+			usb_hcd_resume_root_hub(xhci->shared_hcd);
+		}
+		usb_hcd_resume_root_hub(hcd);
+
 		goto done;
 	}
 
@@ -1278,7 +1312,6 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 
 	xhci_dbc_resume(xhci);
 
- done:
 	if (retval == 0) {
 		/*
 		 * Resume roothubs only if there are pending events.
@@ -1303,6 +1336,7 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 			usb_hcd_resume_root_hub(hcd);
 		}
 	}
+done:
 	/*
 	 * If system is subject to the Quirk, Compliance Mode Timer needs to
 	 * be re-initialized Always after a system resume. Ports are subject
@@ -1344,6 +1378,8 @@ static int xhci_map_temp_buffer(struct usb_hcd *hcd, struct urb *urb)
 
 	temp = kzalloc_node(buf_len, GFP_ATOMIC,
 			    dev_to_node(hcd->self.sysdev));
+	if (!temp)
+		return -ENOMEM;
 
 	if (usb_urb_dir_out(urb))
 		sg_pcopy_to_buffer(urb->sg, urb->num_sgs,
@@ -2974,7 +3010,7 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 				xhci->num_active_eps);
 		return -ENOMEM;
 	}
-	if ((xhci->quirks & XHCI_SW_BW_CHECKING) &&
+	if ((xhci->quirks & XHCI_SW_BW_CHECKING) && !ctx_change &&
 	    xhci_reserve_bandwidth(xhci, virt_dev, command->in_ctx)) {
 		if ((xhci->quirks & XHCI_EP_LIMIT_QUIRK))
 			xhci_free_host_resources(xhci, ctrl_ctx);
@@ -4355,8 +4391,10 @@ static int xhci_setup_device(struct usb_hcd *hcd, struct usb_device *udev,
 		mutex_unlock(&xhci->mutex);
 		ret = xhci_disable_slot(xhci, udev->slot_id);
 		xhci_free_virt_device(xhci, udev->slot_id);
-		if (!ret)
-			xhci_alloc_dev(hcd, udev);
+		if (!ret) {
+			if (xhci_alloc_dev(hcd, udev) == 1)
+				xhci_setup_addressable_virt_dev(xhci, udev);
+		}
 		kfree(command->completion);
 		kfree(command);
 		return -EPROTO;

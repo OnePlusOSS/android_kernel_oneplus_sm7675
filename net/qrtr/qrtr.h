@@ -53,5 +53,7 @@ int qrtr_peek_pkt_size(const void *data);
 
 int qrtr_get_service_id(unsigned int node_id, unsigned int port_id);
 
+int qrtr_get_service_instance_id(unsigned int node_id, unsigned int port_id);
+
 void qrtr_print_wakeup_reason(const void *data);
 #endif

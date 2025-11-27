@@ -51,8 +51,8 @@ static int clk_mt2701_eth_probe(struct platform_device *pdev)
 
 	clk_data = mtk_alloc_clk_data(CLK_ETHSYS_NR);
 
-	mtk_clk_register_gates(node, eth_clks, ARRAY_SIZE(eth_clks),
-						clk_data);
+	mtk_clk_register_gates(&pdev->dev, node, eth_clks,
+			       ARRAY_SIZE(eth_clks), clk_data);
 
 	r = of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
 	if (r)
@@ -72,5 +72,5 @@ static struct platform_driver clk_mt2701_eth_drv = {
 		.of_match_table = of_match_clk_mt2701_eth,
 	},
 };
-
-builtin_platform_driver(clk_mt2701_eth_drv);
+module_platform_driver(clk_mt2701_eth_drv);
+MODULE_LICENSE("GPL");

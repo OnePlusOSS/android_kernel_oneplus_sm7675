@@ -101,7 +101,7 @@
 #define DATA_MAIN .data .data.[0-9a-zA-Z_]* .data..L* .data..compoundliteral* .data.$__unnamed_* .data.$L*
 #define SDATA_MAIN .sdata .sdata.[0-9a-zA-Z_]*
 #define RODATA_MAIN .rodata .rodata.[0-9a-zA-Z_]* .rodata..L*
-#define BSS_MAIN .bss .bss.[0-9a-zA-Z_]* .bss..compoundliteral*
+#define BSS_MAIN .bss .bss.[0-9a-zA-Z_]* .bss..L* .bss..compoundliteral*
 #define SBSS_MAIN .sbss .sbss.[0-9a-zA-Z_]*
 #else
 #define TEXT_MAIN .text
@@ -131,6 +131,7 @@
 	*(__dl_sched_class)			\
 	*(__rt_sched_class)			\
 	*(__fair_sched_class)			\
+	*(__ext_sched_class)			\
 	*(__idle_sched_class)			\
 	__sched_class_lowest = .;
 
@@ -351,7 +352,6 @@
 	*(.ref.data)							\
 	*(.data..shared_aligned) /* percpu related */			\
 	MEM_KEEP(init.data*)						\
-	MEM_KEEP(exit.data*)						\
 	*(.data.unlikely)						\
 	__start_once = .;						\
 	*(.data.once)							\
@@ -546,7 +546,6 @@
 	__init_rodata : AT(ADDR(__init_rodata) - LOAD_OFFSET) {		\
 		*(.ref.rodata)						\
 		MEM_KEEP(init.rodata)					\
-		MEM_KEEP(exit.rodata)					\
 	}								\
 									\
 	/* Built-in module parameters. */				\
@@ -601,7 +600,6 @@
 		*(.ref.text)						\
 		*(.text.asan.* .text.tsan.*)				\
 	MEM_KEEP(init.text*)						\
-	MEM_KEEP(exit.text*)						\
 
 
 /* sched.text is aling to function alignment to secure we have same
@@ -751,13 +749,10 @@
 	*(.exit.data .exit.data.*)					\
 	*(.fini_array .fini_array.*)					\
 	*(.dtors .dtors.*)						\
-	MEM_DISCARD(exit.data*)						\
-	MEM_DISCARD(exit.rodata*)
 
 #define EXIT_TEXT							\
 	*(.exit.text)							\
 	*(.text.exit)							\
-	MEM_DISCARD(exit.text)
 
 #define EXIT_CALL							\
 	*(.exitcall.exit)

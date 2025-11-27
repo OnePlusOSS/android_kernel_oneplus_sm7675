@@ -62,6 +62,14 @@ static inline struct vlan_ethhdr *vlan_eth_hdr(const struct sk_buff *skb)
 	return (struct vlan_ethhdr *)skb_mac_header(skb);
 }
 
+/* Prefer this version in TX path, instead of
+ * skb_reset_mac_header() + vlan_eth_hdr()
+ */
+static inline struct vlan_ethhdr *skb_vlan_eth_hdr(const struct sk_buff *skb)
+{
+	return (struct vlan_ethhdr *)skb->data;
+}
+
 #define VLAN_PRIO_MASK		0xe000 /* Priority Code Point */
 #define VLAN_PRIO_SHIFT		13
 #define VLAN_CFI_MASK		0x1000 /* Canonical Format Indicator / Drop Eligible Indicator */
@@ -531,7 +539,7 @@ static inline void __vlan_hwaccel_put_tag(struct sk_buff *skb,
  */
 static inline int __vlan_get_tag(const struct sk_buff *skb, u16 *vlan_tci)
 {
-	struct vlan_ethhdr *veth = (struct vlan_ethhdr *)skb->data;
+	struct vlan_ethhdr *veth = skb_vlan_eth_hdr(skb);
 
 	if (!eth_type_vlan(veth->h_vlan_proto))
 		return -EINVAL;
@@ -697,6 +705,27 @@ static inline void vlan_set_encap_proto(struct sk_buff *skb,
 }
 
 /**
+ * vlan_remove_tag - remove outer VLAN tag from payload
+ * @skb: skbuff to remove tag from
+ * @vlan_tci: buffer to store value
+ *
+ * Expects the skb to contain a VLAN tag in the payload, and to have skb->data
+ * pointing at the MAC header.
+ *
+ * Returns a new pointer to skb->data, or NULL on failure to pull.
+ */
+static inline void *vlan_remove_tag(struct sk_buff *skb, u16 *vlan_tci)
+{
+	struct vlan_hdr *vhdr = (struct vlan_hdr *)(skb->data + ETH_HLEN);
+
+	*vlan_tci = ntohs(vhdr->h_vlan_TCI);
+
+	memmove(skb->data + VLAN_HLEN, skb->data, 2 * ETH_ALEN);
+	vlan_set_encap_proto(skb, vhdr);
+	return __skb_pull(skb, VLAN_HLEN);
+}
+
+/**
  * skb_vlan_tagged - check if skb is vlan tagged.
  * @skb: skbuff to query
  *
@@ -732,7 +761,7 @@ static inline bool skb_vlan_tagged_multi(struct sk_buff *skb)
 		if (unlikely(!pskb_may_pull(skb, VLAN_ETH_HLEN)))
 			return false;
 
-		veh = (struct vlan_ethhdr *)skb->data;
+		veh = skb_vlan_eth_hdr(skb);
 		protocol = veh->h_vlan_encapsulated_proto;
 	}
 

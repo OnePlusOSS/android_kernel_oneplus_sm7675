@@ -137,6 +137,8 @@ static inline bool mapping_empty(struct address_space *mapping)
 	return xa_empty(&mapping->i_pages);
 }
 
+extern void _trace_android_rvh_mapping_shrinkable(bool *shrinkable);
+
 /*
  * mapping_shrinkable - test if page cache state allows inode reclaim
  * @mapping: the page cache mapping
@@ -161,7 +163,11 @@ static inline bool mapping_empty(struct address_space *mapping)
 static inline bool mapping_shrinkable(struct address_space *mapping)
 {
 	void *head;
+	bool shrinkable = false;
 
+	_trace_android_rvh_mapping_shrinkable(&shrinkable);
+	if (shrinkable)
+		return true;
 	/*
 	 * On highmem systems, there could be lowmem pressure from the
 	 * inodes before there is highmem pressure from the page
@@ -199,6 +205,9 @@ enum mapping_flags {
 	/* writeback related tags are not used */
 	AS_NO_WRITEBACK_TAGS = 5,
 	AS_LARGE_FOLIO_SUPPORT = 6,
+	AS_RELEASE_ALWAYS,	/* Call ->release_folio(), even if no private data */
+	AS_STABLE_WRITES,	/* must wait for writeback before modifying
+				   folio contents */
 };
 
 /**
@@ -267,6 +276,36 @@ static inline void mapping_set_no_writeback_tags(struct address_space *mapping)
 static inline int mapping_use_writeback_tags(struct address_space *mapping)
 {
 	return !test_bit(AS_NO_WRITEBACK_TAGS, &mapping->flags);
+}
+
+static inline bool mapping_release_always(const struct address_space *mapping)
+{
+	return test_bit(AS_RELEASE_ALWAYS, &mapping->flags);
+}
+
+static inline void mapping_set_release_always(struct address_space *mapping)
+{
+	set_bit(AS_RELEASE_ALWAYS, &mapping->flags);
+}
+
+static inline void mapping_clear_release_always(struct address_space *mapping)
+{
+	clear_bit(AS_RELEASE_ALWAYS, &mapping->flags);
+}
+
+static inline bool mapping_stable_writes(const struct address_space *mapping)
+{
+	return test_bit(AS_STABLE_WRITES, &mapping->flags);
+}
+
+static inline void mapping_set_stable_writes(struct address_space *mapping)
+{
+	set_bit(AS_STABLE_WRITES, &mapping->flags);
+}
+
+static inline void mapping_clear_stable_writes(struct address_space *mapping)
+{
+	clear_bit(AS_STABLE_WRITES, &mapping->flags);
 }
 
 static inline gfp_t mapping_gfp_mask(struct address_space * mapping)
@@ -1007,6 +1046,36 @@ static inline vm_fault_t folio_lock_or_retry(struct folio *folio,
 	return 0;
 }
 
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static inline vm_fault_t lock_nr_folios_or_retry(struct folio **folio, struct vm_fault *vmf,
+		int nr)
+{
+	int i;
+	vm_fault_t ret = 0;
+
+	might_sleep();
+
+	for (i = 0; i < nr; i++) {
+		if (folio_trylock(folio[i]))
+			continue;
+
+		ret = __folio_lock_or_retry(folio[i], vmf);
+		if (ret)
+			break;
+	}
+
+	if (ret && i) {
+		for (i--; i >= 0; i--) {
+			CHP_BUG_ON(!folio_test_locked(folio[i]));
+			folio_unlock(folio[i]);
+		}
+		return ret;
+	}
+
+	return 0;
+}
+#endif
 /*
  * This is exported only for folio_wait_locked/folio_wait_writeback, etc.,
  * and should not be used directly.

@@ -33,6 +33,8 @@
 # define build_ww_mutex()	(false)
 # define ww_container_of(rtm)	NULL
 
+extern void rtmutex_wait_handler(struct rt_mutex_base *lock);
+
 static inline int __ww_mutex_add_waiter(struct rt_mutex_waiter *waiter,
 					struct rt_mutex *lock,
 					struct ww_acquire_ctx *ww_ctx)
@@ -326,17 +328,13 @@ static __always_inline bool unlock_rt_mutex_safe(struct rt_mutex_base *lock,
 
 static __always_inline int __waiter_prio(struct task_struct *task)
 {
-	int prio = task->prio;
 	int waiter_prio = 0;
 
 	trace_android_vh_rtmutex_waiter_prio(task, &waiter_prio);
 	if (waiter_prio > 0)
 		return waiter_prio;
 
-	if (!rt_prio(prio))
-		return DEFAULT_PRIO;
-
-	return prio;
+	return task->prio;
 }
 
 static __always_inline void
@@ -1542,6 +1540,7 @@ static int __sched rt_mutex_slowlock_block(struct rt_mutex_base *lock,
 	int ret = 0;
 
 	trace_android_vh_rtmutex_wait_start(lock);
+	rtmutex_wait_handler(lock);
 	for (;;) {
 		/* Try to acquire the lock: */
 		if (try_to_take_rt_mutex(lock, current, waiter))
@@ -1581,6 +1580,7 @@ static int __sched rt_mutex_slowlock_block(struct rt_mutex_base *lock,
 }
 
 static void __sched rt_mutex_handle_deadlock(int res, int detect_deadlock,
+					     struct rt_mutex_base *lock,
 					     struct rt_mutex_waiter *w)
 {
 	/*
@@ -1593,10 +1593,10 @@ static void __sched rt_mutex_handle_deadlock(int res, int detect_deadlock,
 	if (build_ww_mutex() && w->ww_ctx)
 		return;
 
-	/*
-	 * Yell loudly and stop the task right here.
-	 */
+	raw_spin_unlock_irq(&lock->wait_lock);
+
 	WARN(1, "rtmutex deadlock detected\n");
+
 	while (1) {
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
@@ -1650,7 +1650,7 @@ static int __sched __rt_mutex_slowlock(struct rt_mutex_base *lock,
 	} else {
 		__set_current_state(TASK_RUNNING);
 		remove_waiter(lock, waiter);
-		rt_mutex_handle_deadlock(ret, chwalk, waiter);
+		rt_mutex_handle_deadlock(ret, chwalk, lock, waiter);
 	}
 
 	/*

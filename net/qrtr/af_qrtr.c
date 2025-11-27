@@ -44,6 +44,10 @@
 
 #define AID_VENDOR_QRTR	KGIDT_INIT(2906)
 
+#ifdef CONFIG_OPLUS_POWERINFO_STANDBY_DEBUG
+#define MAX_NAME_LEN	63
+#endif
+
 /**
  * struct qrtr_hdr_v1 - (I|R)PCrouter packet header version 1
  * @version: protocol version
@@ -145,11 +149,18 @@ u32 qrtr_ports_next = QRTR_MIN_EPH_SOCKET;
 static DEFINE_SPINLOCK(qrtr_port_lock);
 
 /* backup buffers */
-#define QRTR_BACKUP_HI_NUM	5
+/* #ifdef OPLUS_FEATURE_SENSOR
+ * Increase the number of SKBs of size 16k from 5 to 10 and add 20 SKBs of size 256B, to handle low memory scenarios.
+*/
+#define QRTR_BACKUP_HI_NUM	20
 #define QRTR_BACKUP_HI_SIZE	SZ_16K
-#define QRTR_BACKUP_LO_NUM	20
-#define QRTR_BACKUP_LO_SIZE	SZ_1K
+#define QRTR_BACKUP_MD_NUM	128
+#define QRTR_BACKUP_MD_SIZE	SZ_1K
+#define QRTR_BACKUP_LO_NUM	128
+#define QRTR_BACKUP_LO_SIZE	SZ_256
+// #endif
 static struct sk_buff_head qrtr_backup_lo;
+static struct sk_buff_head qrtr_backup_md;
 static struct sk_buff_head qrtr_backup_hi;
 static struct work_struct qrtr_backup_work;
 
@@ -933,6 +944,16 @@ static void qrtr_alloc_backup(struct work_struct *work)
 			break;
 		skb_queue_tail(&qrtr_backup_lo, skb);
 	}
+
+	while (skb_queue_len(&qrtr_backup_md) < QRTR_BACKUP_MD_NUM) {
+		skb = alloc_skb_with_frags(sizeof(struct qrtr_hdr_v1),
+					   QRTR_BACKUP_MD_SIZE, 0, &errcode,
+					   GFP_KERNEL);
+		if (!skb)
+			break;
+		skb_queue_tail(&qrtr_backup_md, skb);
+	}
+
 	while (skb_queue_len(&qrtr_backup_hi) < QRTR_BACKUP_HI_NUM) {
 		skb = alloc_skb_with_frags(sizeof(struct qrtr_hdr_v1),
 					   QRTR_BACKUP_HI_SIZE, 0, &errcode,
@@ -949,6 +970,8 @@ static struct sk_buff *qrtr_get_backup(size_t len)
 
 	if (len < QRTR_BACKUP_LO_SIZE)
 		skb = skb_dequeue(&qrtr_backup_lo);
+	else if (len < QRTR_BACKUP_MD_SIZE)
+		skb = skb_dequeue(&qrtr_backup_md);
 	else if (len < QRTR_BACKUP_HI_SIZE)
 		skb = skb_dequeue(&qrtr_backup_hi);
 
@@ -961,6 +984,7 @@ static struct sk_buff *qrtr_get_backup(size_t len)
 static void qrtr_backup_init(void)
 {
 	skb_queue_head_init(&qrtr_backup_lo);
+	skb_queue_head_init(&qrtr_backup_md);
 	skb_queue_head_init(&qrtr_backup_hi);
 	INIT_WORK(&qrtr_backup_work, qrtr_alloc_backup);
 	queue_work(system_unbound_wq, &qrtr_backup_work);
@@ -970,6 +994,7 @@ static void qrtr_backup_deinit(void)
 {
 	cancel_work_sync(&qrtr_backup_work);
 	skb_queue_purge(&qrtr_backup_lo);
+	skb_queue_purge(&qrtr_backup_md);
 	skb_queue_purge(&qrtr_backup_hi);
 }
 
@@ -994,6 +1019,12 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	size_t hdrlen;
 	int errcode;
 	int svc_id;
+	#ifdef CONFIG_OPLUS_POWERINFO_STANDBY_DEBUG
+	int instance_id;
+	char buf[MAX_NAME_LEN + 1];
+	struct qrtr_ctrl_pkt pkt = {0,};
+	unsigned long flags;
+	#endif
 
 	if (len == 0 || len & 3)
 		return -EINVAL;
@@ -1088,6 +1119,43 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	 * queued to the worker for forwarding handling.
 	 */
 	svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
+
+	#ifdef CONFIG_OPLUS_POWERINFO_STANDBY_DEBUG
+	memset(buf, 0, sizeof(buf));
+	if (cb->type == QRTR_TYPE_DATA) {
+		instance_id = qrtr_get_service_instance_id(cb->src_node, cb->src_port);
+		if (svc_id < 0 || instance_id < 0) {
+			svc_id = qrtr_get_service_id(cb->dst_node, cb->dst_port);
+			instance_id = qrtr_get_service_instance_id(cb->dst_node, cb->dst_port);
+		}
+		snprintf(buf, MAX_NAME_LEN, "qrtr_ws_srv[%d:%d]", svc_id, instance_id);
+	} else if (cb->type == QRTR_TYPE_HELLO || cb->type == QRTR_TYPE_BYE) {
+		snprintf(buf, MAX_NAME_LEN, "qrtr_ws_cmd[%d][%d]",
+				cb->type, cb->src_node);
+	} else {
+		skb_copy_bits(skb, 0, &pkt, sizeof(pkt));
+		if (cb->type == QRTR_TYPE_NEW_SERVER
+				|| cb->type == QRTR_TYPE_DEL_SERVER) {
+			snprintf(buf, MAX_NAME_LEN, "qrtr_ws_cmd:%d[%d:%d]",
+						cb->type, le32_to_cpu(pkt.server.node),
+						le32_to_cpu(pkt.server.port));
+		} else if (cb->type == QRTR_TYPE_DEL_CLIENT
+				|| cb->type == QRTR_TYPE_RESUME_TX) {
+			snprintf(buf, MAX_NAME_LEN, "qrtr_ws_cmd:%d[%d:%d]",
+						cb->type, le32_to_cpu(pkt.client.node),
+						le32_to_cpu(pkt.client.port));
+		} else if (cb->type == QRTR_TYPE_DEL_PROC) {
+			snprintf(buf, MAX_NAME_LEN, "qrtr_ws_cmd:%d[%d]",
+						cb->type, le32_to_cpu(pkt.proc.node));
+		} else {
+			snprintf(buf, MAX_NAME_LEN, "qrtr_ws");
+		}
+	}
+	spin_lock_irqsave(&node->ws->lock, flags);
+	strncpy((char *)node->ws->name, buf, MAX_NAME_LEN);
+	spin_unlock_irqrestore(&node->ws->lock, flags);
+	#endif
+
 	if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid) {
 		skb_queue_tail(&node->rx_queue, skb);
 		kthread_queue_work(&node->kworker, &node->read_data);
@@ -1388,6 +1456,10 @@ int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id,
 	size_t size;
 	struct qrtr_node *node;
 	struct sched_param param = {.sched_priority = 1};
+#ifdef CONFIG_OPLUS_POWERINFO_STANDBY_DEBUG
+	const char *ws_name = NULL;
+	const char *old_ws_name = NULL;
+#endif
 
 	if (!ep || !ep->xmit)
 		return -EINVAL;
@@ -1438,6 +1510,19 @@ int qrtr_endpoint_register(struct qrtr_endpoint *ep, unsigned int net_id,
 	ep->node = node;
 
 	node->ws = wakeup_source_register(NULL, "qrtr_ws");
+
+#ifdef CONFIG_OPLUS_POWERINFO_STANDBY_DEBUG
+	ws_name = kmalloc(MAX_NAME_LEN + 1, GFP_KERNEL);
+	if (!ws_name) {
+		kfree(node);
+		return -ENOMEM;
+	}
+	strcpy((char *)ws_name, "qrtr_ws"); /* set default name */
+
+	old_ws_name = node->ws->name;
+	node->ws->name = ws_name;
+	kfree_const(old_ws_name);
+#endif
 
 	kthread_queue_work(&node->kworker, &node->say_hello);
 	return 0;

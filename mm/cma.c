@@ -196,10 +196,6 @@ int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
 	if (!size || !memblock_is_region_reserved(base, size))
 		return -EINVAL;
 
-	/* alignment should be aligned with order_per_bit */
-	if (!IS_ALIGNED(CMA_MIN_ALIGNMENT_PAGES, 1 << order_per_bit))
-		return -EINVAL;
-
 	/* ensure minimal alignment required by mm core */
 	if (!IS_ALIGNED(base | size, CMA_MIN_ALIGNMENT_BYTES))
 		return -EINVAL;
@@ -623,6 +619,18 @@ bool cma_release(struct cma *cma, const struct page *pages,
 	VM_BUG_ON(pfn + count > cma->base_pfn + cma->count);
 
 	free_contig_range(pfn, count);
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (PageContRefill(pages)) {
+		CHP_BUG_ON(!IS_ALIGNED(pfn, HPAGE_CONT_PTE_NR));
+		CHP_BUG_ON(count != HPAGE_CONT_PTE_NR);
+		if (TestClearPageContExtAlloc((struct page *)pages))
+			count_vm_chp_event(CHP_REFILL_EXTALLOC);
+		cont_pte_pool_add((struct page *)pages);
+		return true;
+	}
+#endif
+
 	cma_clear_bitmap(cma, pfn, count);
 	trace_cma_release(cma->name, pfn, pages, count);
 

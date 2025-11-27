@@ -38,6 +38,9 @@
 #define  PON_RESIN_N_SET		BIT(1)
 #define  PON_GEN3_RESIN_N_SET		BIT(6)
 #define  PON_GEN3_KPDPWR_N_SET		BIT(7)
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+#define  PON_GEN3_KPDPWR_RESIN_N_SET	BIT(2)
+#endif
 
 #define PON_PS_HOLD_RST_CTL		0x5a
 #define PON_PS_HOLD_RST_CTL2		0x5b
@@ -56,6 +59,11 @@
 #define  PON_DBC_DELAY_MASK_GEN2	0xf
 #define  PON_DBC_SHIFT_GEN1		6
 #define  PON_DBC_SHIFT_GEN2		14
+
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+#include <misc/oplus_power_notifier.h>
+static struct oplus_power_notify_data g_oplus_power_notify_host;
+#endif
 
 struct pm8941_data {
 	unsigned int	pull_up_bit;
@@ -87,6 +95,10 @@ struct pm8941_pwrkey {
 	bool pull_up;
 	bool log_kpd_event;
 	const struct pm8941_data *data;
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+	struct delayed_work     oplus_bark_work;
+	struct workqueue_struct *oplus_pon_workqueue;
+#endif
 };
 
 static int pm8941_reboot_notify(struct notifier_block *nb,
@@ -193,8 +205,26 @@ static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 	input_report_key(pwrkey->input, pwrkey->code, sts);
 	input_sync(pwrkey->input);
 
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+	if (!strcmp(pwrkey->data->name,"pmic_pwrkey_resin_bark")) {
+		dev_err(pwrkey->dev, "[Oplus_LCD]pm8941_pwrkey_irq name:%s status_bit:0x%x\n", pwrkey->data->name, sts);
+		if (sts == PON_GEN3_KPDPWR_RESIN_N_SET) {
+			dev_err(pwrkey->dev, "[Oplus_LCD]pm8941_pwrkey_irq call oplus_power_notifier_call_chain\n");
+			queue_delayed_work(pwrkey->oplus_pon_workqueue, &pwrkey->oplus_bark_work, 0);
+		}
+	}
+#endif
+
 	return IRQ_HANDLED;
 }
+
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+static void oplus_bark_work_func(struct work_struct *work)
+{
+	g_oplus_power_notify_host.pon_status = OPLUS_PON_KPDPWR_RESIN_BARK;
+	oplus_power_notifier_call_chain(OPLUS_POWER_EVENT_PON, &g_oplus_power_notify_host);
+}
+#endif
 
 static int pm8941_pwrkey_sw_debounce_init(struct pm8941_pwrkey *pwrkey)
 {
@@ -496,7 +526,13 @@ static int pm8941_pwrkey_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pwrkey);
 	device_init_wakeup(&pdev->dev, 1);
-
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+	if (!strcmp(pwrkey->data->name,"pmic_pwrkey_resin_bark")) {
+		INIT_DELAYED_WORK(&pwrkey->oplus_bark_work, oplus_bark_work_func);
+		pwrkey->oplus_pon_workqueue = create_singlethread_workqueue("oplus_pon_workqueue");
+		dev_err(&pdev->dev, "[Oplus_LCD]create oplus_pon_workqueue\n");
+	}
+#endif
 	return 0;
 }
 
@@ -548,11 +584,25 @@ static const struct pm8941_data pon_gen3_resin_data = {
 	.has_pon_pbs = true,
 };
 
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+static const struct pm8941_data pon_gen3_pwrkey_resin_data = {
+	.status_bit = PON_GEN3_KPDPWR_RESIN_N_SET,
+	.name = "pmic_pwrkey_resin_bark",
+	.phys = "pmic_pwrkey_resin_bark/input0",
+	.supports_ps_hold_poff_config = false,
+	.supports_debounce_config = false,
+	.has_pon_pbs = true,
+};
+#endif
+
 static const struct of_device_id pm8941_pwr_key_id_table[] = {
 	{ .compatible = "qcom,pm8941-pwrkey", .data = &pwrkey_data },
 	{ .compatible = "qcom,pm8941-resin", .data = &resin_data },
 	{ .compatible = "qcom,pmk8350-pwrkey", .data = &pon_gen3_pwrkey_data },
 	{ .compatible = "qcom,pmk8350-resin", .data = &pon_gen3_resin_data },
+#if IS_ENABLED(CONFIG_OPLUS_POWER_NOTIFIER)
+	{ .compatible = "qcom,pmk8350-pwrkey-resin", .data = &pon_gen3_pwrkey_resin_data },
+#endif
 	{ }
 };
 MODULE_DEVICE_TABLE(of, pm8941_pwr_key_id_table);

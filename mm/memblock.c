@@ -99,6 +99,10 @@
 #ifndef CONFIG_NUMA
 struct pglist_data __refdata contig_page_data;
 EXPORT_SYMBOL(contig_page_data);
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+struct chp_lruvec __refdata contig_chp_lruvec;
+#endif /* defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU */
 #endif
 
 unsigned long max_low_pfn;
@@ -175,8 +179,9 @@ static inline phys_addr_t memblock_cap_size(phys_addr_t base, phys_addr_t *size)
 /*
  * Address comparison utilities
  */
-static unsigned long __init_memblock memblock_addrs_overlap(phys_addr_t base1, phys_addr_t size1,
-				       phys_addr_t base2, phys_addr_t size2)
+unsigned long __init_memblock
+memblock_addrs_overlap(phys_addr_t base1, phys_addr_t size1, phys_addr_t base2,
+		       phys_addr_t size2)
 {
 	return ((base1 < (base2 + size2)) && (base2 < (base1 + size1)));
 }

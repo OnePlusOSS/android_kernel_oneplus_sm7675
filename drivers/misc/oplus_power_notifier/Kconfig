@@ -1,0 +1,10 @@
+#
+# oplus power notifier driver configuration
+#
+
+config OPLUS_POWER_NOTIFIER
+	tristate "oplus power notifier"
+	default m
+	help
+	  Say Y here if you use oplus power notifier.
+	  If unsure, say N.

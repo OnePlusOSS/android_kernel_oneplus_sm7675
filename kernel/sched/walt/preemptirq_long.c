@@ -27,6 +27,7 @@ static unsigned int one_million = 1000000;
 
 static DEFINE_PER_CPU(u64, irq_disabled_ts);
 
+static bool enable_debug;
 /*
  * preemption disable tracking require additional context
  * to rule out false positives. see the comment in
@@ -38,10 +39,11 @@ struct preempt_store {
 	unsigned long	ncsw;
 };
 static DEFINE_PER_CPU(struct preempt_store, the_ps);
+static struct ctl_table_header *preemptirq_long_header;
 
 static void note_irq_disable(void *u1, unsigned long u2, unsigned long u3)
 {
-	if (is_idle_task(current))
+	if (!enable_debug || is_idle_task(current))
 		return;
 
 	/*
@@ -55,7 +57,7 @@ static void test_irq_disable_long(void *u1, unsigned long ip, unsigned long pare
 {
 	u64 ts = this_cpu_read(irq_disabled_ts);
 
-	if (!ts)
+	if (!enable_debug || !ts)
 		return;
 
 	this_cpu_write(irq_disabled_ts, 0);
@@ -85,6 +87,9 @@ static void note_preempt_disable(void *u1, unsigned long u2, unsigned long u3)
 {
 	struct preempt_store *ps = &per_cpu(the_ps, raw_smp_processor_id());
 
+	if (!enable_debug)
+		return;
+
 	ps->ts = sched_clock();
 	ps->pid = current->pid;
 	ps->ncsw = current->nvcsw + current->nivcsw;
@@ -95,6 +100,9 @@ static void test_preempt_disable_long(void *u1, unsigned long ip,
 {
 	struct preempt_store *ps = &per_cpu(the_ps, raw_smp_processor_id());
 	u64 delta = 0;
+
+	if (!enable_debug)
+		return;
 
 	if (!ps->ts)
 		return;
@@ -162,11 +170,13 @@ static struct ctl_table preemptirq_long_table[] = {
 
 int preemptirq_long_init(void)
 {
-	if (!register_sysctl("preemptirq", preemptirq_long_table)) {
+	preemptirq_long_header = register_sysctl("preemptirq", preemptirq_long_table);
+	if (!preemptirq_long_header) {
 		pr_err("Fail to register sysctl table\n");
 		return -EPERM;
 	}
 
+	enable_debug = true;
 	register_trace_android_rvh_irqs_disable(note_irq_disable, NULL);
 	register_trace_android_rvh_irqs_enable(test_irq_disable_long, NULL);
 	register_trace_android_rvh_preempt_disable(note_preempt_disable, NULL);
@@ -174,4 +184,20 @@ int preemptirq_long_init(void)
 						 NULL);
 
 	return 0;
+}
+
+void preemptirq_long_cleanup(void)
+{
+	int cpu;
+	u64 *irq_ts;
+	struct preempt_store *ps;
+
+	enable_debug = false;
+	for_each_possible_cpu(cpu) {
+		ps =  &per_cpu(the_ps, cpu);
+		irq_ts = &per_cpu(irq_disabled_ts, cpu);
+		ps->ts = 0;
+		*irq_ts = 0;
+	}
+	unregister_sysctl_table(preemptirq_long_header);
 }
