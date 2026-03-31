@@ -2601,7 +2601,7 @@ ufshcd_is_valid_pm_lvl(enum ufs_pm_level lvl)
 	return lvl >= 0 && lvl < UFS_PM_LVL_MAX;
 }
 
-static void ufshcd_parse_pm_levels(struct ufs_hba *hba)
+static void ufs_qcom_parse_pm_levels(struct ufs_hba *hba)
 {
 	struct device *dev = hba->dev;
 	struct device_node *np = dev->of_node;
@@ -2621,8 +2621,6 @@ static void ufshcd_parse_pm_levels(struct ufs_hba *hba)
 		ufshcd_is_valid_pm_lvl(spm_lvl))
 		hba->spm_lvl = spm_lvl;
 	host->is_dt_pm_level_read = true;
-
-	host->spm_lvl_default = hba->spm_lvl;
 }
 
 static void ufs_qcom_override_pa_tx_hsg1_sync_len(struct ufs_hba *hba)
@@ -2664,8 +2662,6 @@ static int ufs_qcom_apply_dev_quirks(struct ufs_hba *hba)
 
 	if (hba->dev_quirks & UFS_DEVICE_QUIRK_PA_TX_HSG1_SYNC_LENGTH)
 		ufs_qcom_override_pa_tx_hsg1_sync_len(hba);
-
-	ufshcd_parse_pm_levels(hba);
 
 	/* the v7 need to keep vcc on for stability */
 	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SAMSUNG_QLC) {
@@ -3095,9 +3091,12 @@ int ufs_ioctl_monitor(struct scsi_device *dev, void __user *buf_user)
 	scmd = blk_mq_rq_to_pdu(req);
 
 	cmdlen = COMMAND_SIZE(opcode);
-	if (((VENDOR_SPECIFIC_CDB == opcode) && (0 == strncmp(dev->vendor, "SAMSUNG ", 8)))
-		|| (0 == strncmp(dev->vendor, "SKhynix ", 8)))
+  	if (((VENDOR_SPECIFIC_CDB == opcode) && (0 == strncmp(dev->vendor, "SAMSUNG ", 8)))
+  	         || ((READ_BUFFER == opcode) && (0 == strncmp(dev->vendor, "XBSTOR ", 7)))
+  	         || ((READ_BUFFER == opcode) && (0 == strncmp(dev->vendor, "YMTC ", 5)) && (strnstr(dev->model, "B4TF", 15)))
+  	         || (0 == strncmp(dev->vendor, "SKhynix ", 8))) {
 		cmdlen = 16;
+        }
 
 	/*
 	 * get command and data to send to device, if any
@@ -3726,21 +3725,6 @@ static void ufs_qcom_parse_irq_affinity(struct ufs_hba *hba)
 	/* If device includes perf mask, enable dynamic irq affinity feature */
 	if (host->perf_mask.bits[0])
 		host->irq_affinity_support = true;
-}
-
-static void ufs_qcom_parse_pm_level(struct ufs_hba *hba)
-{
-	struct device *dev = hba->dev;
-	struct device_node *np = dev->of_node;
-
-	if (np) {
-		if (of_property_read_u32(np, "rpm-level",
-					 &hba->rpm_lvl))
-			hba->rpm_lvl = -1;
-		if (of_property_read_u32(np, "spm-level",
-					 &hba->spm_lvl))
-			hba->spm_lvl = -1;
-	}
 }
 
 /* Returns the max mitigation level supported */
@@ -4886,7 +4870,7 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	if (err)
 		goto out_disable_vccq_parent;
 
-	ufs_qcom_parse_pm_level(hba);
+	ufs_qcom_parse_pm_levels(hba);
 	ufs_qcom_parse_limits(host);
 	ufs_qcom_parse_g4_workaround_flag(host);
 	ufs_qcom_parse_lpm(host);
@@ -7220,9 +7204,6 @@ static int ufs_qcom_suspend_prepare(struct device *dev)
 	 */
 	if (pm_suspend_target_state == PM_SUSPEND_MEM)
 		hba->spm_lvl = UFS_PM_LVL_5;
-	else
-		hba->spm_lvl = host->spm_lvl_default;
-
 
 	return ufshcd_suspend_prepare(dev);
 }

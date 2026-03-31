@@ -1058,13 +1058,6 @@ config MINIDUMP_MAX_ENTRIES
 	  This defines maximum number of entries to be allocated for application
 	  subsytem in Minidump table.
 
-config MINIDUMP_ALL_TASK_INFO
-	bool "QCOM Minidump Panic dumps Kernel Task Info"
-	default y
-	depends on QCOM_MINIDUMP_PANIC_DUMP
-	help
-	  QCOM Minidump Panic dumps Kernel Task Info
-
 config OPLUS_RPMH_QCOM
 	bool "powerinfo rpmh config v2"
 	default n

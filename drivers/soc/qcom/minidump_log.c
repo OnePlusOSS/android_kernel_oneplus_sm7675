@@ -121,7 +121,7 @@ static bool minidump_ftrace_dump = true;
 #ifndef CONFIG_MINIDUMP_ALL_TASK_INFO
 #define MD_RUNQUEUE_PAGES	8
 #else
-#define MD_RUNQUEUE_PAGES	300
+#define MD_RUNQUEUE_PAGES	150
 #endif
 
 static bool md_in_oops_handler;
@@ -987,17 +987,17 @@ static void md_dump_runqueues(void)
 #endif
 		seq_buf_printf(md_runq_seq_buf, "%-15s", t->comm);
 		seq_buf_printf(md_runq_seq_buf, "%6d", t->pid);
-		seq_buf_printf(md_runq_seq_buf, "%6llu.%09llu", t->sched_info.last_arrival / 1000000000, t->sched_info.last_arrival % 1000000000);
-		seq_buf_printf(md_runq_seq_buf, "%6llu.%09llu", t->sched_info.last_queued / 1000000000, t->sched_info.last_queued % 1000000000);
-		seq_buf_printf(md_runq_seq_buf, "%6llu.%09llu", t->sched_info.run_delay / 1000000000, t->sched_info.run_delay % 1000000000);
+		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_arrival);
+		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.last_queued);
+		seq_buf_printf(md_runq_seq_buf, "%16lld", t->sched_info.run_delay);
 		seq_buf_printf(md_runq_seq_buf, "%12ld", t->sched_info.pcount);
-		seq_buf_printf(md_runq_seq_buf, "%4d", task_cpu(t));
+		seq_buf_printf(md_runq_seq_buf, "%4d", t->on_cpu);
 		seq_buf_printf(md_runq_seq_buf, "%5d", t->prio);
 		seq_buf_printf(md_runq_seq_buf, "%*s", 6, md_get_task_state(t));
 #if IS_ENABLED(CONFIG_SCHED_WALT)
 		wts = (struct walt_task_struct *) t->android_vendor_data1;
-		seq_buf_printf(md_runq_seq_buf, "%7llu.%09llu", wts->last_enqueued_ts / 1000000000, wts->last_enqueued_ts % 1000000000);
-		seq_buf_printf(md_runq_seq_buf, "%6llu.%09llu", wts->last_sleep_ts / 1000000000, wts->last_sleep_ts % 1000000000);
+		seq_buf_printf(md_runq_seq_buf, "%17ld", wts->last_enqueued_ts);
+		seq_buf_printf(md_runq_seq_buf, "%16ld", wts->last_sleep_ts);
 #endif
 		seq_buf_printf(md_runq_seq_buf, "\n");
 	}

@@ -656,7 +656,11 @@ int qmi_handle_init(struct qmi_handle *qmi, size_t recv_buf_size,
 	if (!qmi->recv_buf)
 		return -ENOMEM;
 
+	#ifndef CONFIG_BLOCKIO_UX_OPT
 	qmi->wq = alloc_workqueue("qmi_msg_handler", WQ_UNBOUND | WQ_HIGHPRI, 1);
+	#else /* CONFIG_BLOCKIO_UX_OPT */
+	qmi->wq = alloc_workqueue("qmi_msg_handler", WQ_UNBOUND | WQ_UX | WQ_HIGHPRI, 1);
+	#endif /* CONFIG_BLOCKIO_UX_OPT */
 	if (!qmi->wq) {
 		ret = -ENOMEM;
 		goto err_free_recv_buf;
