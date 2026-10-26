@@ -6695,12 +6695,18 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	struct rq_flags rf;
 	struct rq *rq;
 	int cpu;
+	bool skip_schedule = false;
 
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
 
 	schedule_debug(prev, !!sched_mode);
+
+	trace_android_vh_lock_delay_schedule(prev, sched_mode, &skip_schedule);
+
+	if (skip_schedule)
+		return;
 
 	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
 		hrtick_clear(rq);
@@ -6773,6 +6779,7 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	next = pick_next_task(rq, prev, &rf);
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
+	trace_android_vh_clear_curr_lazy(prev);
 #ifdef CONFIG_SCHED_DEBUG
 	rq->last_seen_need_resched_ns = 0;
 #endif
@@ -10606,6 +10613,7 @@ cpu_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 #if IS_ENABLED(CONFIG_OPLUS_SCHED_TUNE)
 		schedtune_root_alloc();
 #endif
+		trace_android_vh_cpu_cgroup_css_alloc_early(parent);
 		/* This is early initialization for the top cgroup */
 		return &root_task_group.css;
 	}
@@ -10618,6 +10626,7 @@ cpu_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	schedtune_alloc(tg, parent_css);
 #endif
 
+	trace_android_vh_cpu_cgroup_css_alloc(tg, parent_css);
 	return &tg->css;
 }
 
@@ -10661,6 +10670,8 @@ static void cpu_cgroup_css_free(struct cgroup_subsys_state *css)
 #if IS_ENABLED(CONFIG_OPLUS_SCHED_TUNE)
 	schedtune_free(css);
 #endif
+
+	trace_android_vh_cpu_cgroup_css_free(css);
 }
 
 #if defined(CONFIG_RT_GROUP_SCHED)
